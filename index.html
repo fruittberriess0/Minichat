@@ -49,37 +49,120 @@ button{border:0;border-radius:22px;background:#3390ec;color:white;padding:0 18px
 <button onclick="sendMessage()">➤</button>
 
 </footer>
-
+<script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
 <script>
+const SUPABASE_URL = "https://gjqpucsbfuoqoncmdfbj.supabase.co/rest/v1/";
+const SUPABASE_KEY = "sb_publishable_S1M6veMpHEUzwpA0HeYwlw_IkQYqIzr";
 
-function sendMessage(){
+const db = supabase.createClient(SUPABASE_URL, SUPABASE_KEY);
+let currentUser;
+let chatId;
+let channel;
 
- const input=document.getElementById('message');
+async function startChat() {
+  const email = prompt("Введи свой email Supabase");
+  if (!email) return;
 
- const value=input.value.trim();
+  const password = prompt("Введи пароль своего аккаунта");
+  if (!password) return;
 
- if(!value)return;
+  const { data, error } = await db.auth.signInWithPassword({
+    email,
+    password
+  });
 
- const msg=document.createElement('div');
+  if (error) {
+    alert("Ошибка входа: " + error.message);
+    return;
+  }
 
- msg.className='msg me';
+  currentUser = data.user;
 
- msg.textContent=value;
+  const { data: memberships, error: memberError } = await db
+    .from("chat_members")
+    .select("chat_id")
+    .eq("user_id", currentUser.id);
 
- document.getElementById('messages').appendChild(msg);
+  if (memberError  !memberships  memberships.length === 0) {
+    alert("Чат не найден. Проверь участников чата в Supabase.");
+    return;
+  }
 
- input.value='';
+  chatId = memberships[0].chat_id;
+  await loadMessages();
 
- document.getElementById('messages').scrollTop=999999;
+  channel = db.channel("minichat-messages")
+    .on("postgres_changes", {
+      event: "INSERT",
+      schema: "public",
+      table: "messages",
+      filter: "chat_id=eq." + chatId
+    }, payload => {
+      showMessage(payload.new);
+    })
+    .subscribe();
 
+  document.querySelector("header").innerHTML =
+    "MiniChat ❤️<div class='status'>Ты вошёл в аккаунт</div>";
 }
 
-document.getElementById('message').addEventListener('keydown',e=>{
+async function loadMessages() {
+  const { data, error } = await db
+    .from("messages")
+    .select("*")
+    .eq("chat_id", chatId)
+    .order("created_at", { ascending: true });
 
- if(e.key==='Enter')sendMessage();
+  if (error) {
+    alert("Не удалось загрузить сообщения: " + error.message);
+    return;
+  }
 
+  const list = document.getElementById("messages");
+  list.innerHTML = "";
+  data.forEach(showMessage);
+}
+
+function showMessage(message) {
+  const list = document.getElementById("messages");
+
+  if (list.querySelector('[data-id="' + message.id + '"]')) return;
+
+  const el = document.createElement("div");
+  el.className = "msg" +
+    (message.sender_id === currentUser.id ? " me" : "");
+  el.dataset.id = message.id;
+  el.textContent = message.content;
+
+  list.appendChild(el);
+  list.scrollTop = list.scrollHeight;
+}
+
+async function sendMessage() {
+  const input = document.getElementById("message");
+  const content = input.value.trim();
+
+  if (!content  !currentUser  !chatId) return;
+
+  const { error } = await db.from("messages").insert({
+    chat_id: chatId,
+    sender_id: currentUser.id,
+    content
+  });
+
+  if (error) {
+    alert("Не удалось отправить: " + error.message);
+    return;
+  }
+
+  input.value = "";
+}
+
+document.getElementById("message").addEventListener("keydown", e => {
+  if (e.key === "Enter") sendMessage();
 });
 
+startChat();
 </script>
 
 </body>
