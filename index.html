@@ -1,4 +1,130 @@
-el.textContent = message.content;
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>MiniChat ❤️</title>
+<style>
+*{box-sizing:border-box}
+body{margin:0;font-family:Arial,sans-serif;background:#17212b;color:white}
+header{background:#242f3d;padding:18px;font-size:22px;font-weight:bold}
+.status{font-size:12px;color:#8fa7ba;margin-top:5px}
+#messages{height:calc(100dvh - 140px);overflow:auto;padding:15px;display:flex;flex-direction:column;gap:10px}
+.msg{background:#242f3d;padding:11px 14px;border-radius:15px;max-width:80%;align-self:flex-start;overflow-wrap:anywhere}
+.me{background:#2b5278;align-self:flex-end}
+footer{position:fixed;bottom:0;left:0;right:0;display:flex;gap:8px;padding:12px;background:#242f3d}
+input{flex:1;min-width:0;border:0;border-radius:22px;padding:13px;font-size:16px;outline:none}
+button{border:0;border-radius:22px;background:#3390ec;color:white;padding:12px 18px;font-size:16px}
+#login{padding:15px}
+#login input{width:100%;margin:6px 0}
+#login button{width:100%;margin-top:8px}
+</style>
+</head>
+<body>
+<header>MiniChat ❤️<div class="status" id="status">Войди, чтобы начать общение</div></header>
+
+<div id="login">
+  <input id="email" type="email" placeholder="Твой email" autocomplete="email">
+  <input id="password" type="password" placeholder="Пароль" autocomplete="current-password">
+  <button onclick="startChat()">Войти</button>
+</div>
+
+<div id="messages" style="display:none"></div>
+<footer id="footer" style="display:none">
+  <input id="message" placeholder="Написать сообщение..." autocomplete="off">
+  <button onclick="sendMessage()">➤</button>
+</footer>
+
+<script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
+<script>
+const SUPABASE_URL = "https://gjqpucsbfuoqoncmdfbj.supabase.co";
+const SUPABASE_KEY = "sb_publishable_S1M6veMpHEUzwpA0HeYwlw_IkQYqIzr";
+
+const db = supabase.createClient(SUPABASE_URL, SUPABASE_KEY);
+let currentUser = null;
+let chatId = null;
+
+async function startChat() {
+  const email = document.getElementById("email").value.trim();
+  const password = document.getElementById("password").value;
+  const status = document.getElementById("status");
+
+  if (!email || !password) {
+    alert("Введи email и пароль");
+    return;
+  }
+
+  status.textContent = "Входим...";
+
+  const { data, error } = await db.auth.signInWithPassword({
+    email, password
+  });
+
+  if (error) {
+    status.textContent = "Не удалось войти";
+    alert("Ошибка входа: " + error.message);
+    return;
+  }
+
+  currentUser = data.user;
+
+  const { data: memberships, error: memberError } = await db
+    .from("chat_members")
+    .select("chat_id")
+    .eq("user_id", currentUser.id);
+
+  if (memberError  !memberships  memberships.length === 0) {
+    alert("Не удалось найти чат: " +
+      (memberError ? memberError.message : "аккаунт не добавлен в чат"));
+    return;
+  }
+
+  chatId = memberships[0].chat_id;
+
+  document.getElementById("login").style.display = "none";
+  document.getElementById("messages").style.display = "flex";
+  document.getElementById("footer").style.display = "flex";
+  status.textContent = "Ты вошёл ❤️";
+
+  await loadMessages();
+
+  db.channel("minichat-" + chatId)
+    .on("postgres_changes", {
+      event: "INSERT",
+      schema: "public",
+      table: "messages",
+      filter: "chat_id=eq." + chatId
+    }, payload => showMessage(payload.new))
+    .subscribe();
+}
+
+async function loadMessages() {
+  const { data, error } = await db
+    .from("messages")
+    .select("*")
+    .eq("chat_id", chatId)
+    .order("created_at", { ascending: true });
+
+  if (error) {
+    alert("Ошибка загрузки сообщений: " + error.message);
+    return;
+  }
+
+  const list = document.getElementById("messages");
+  list.innerHTML = "";
+  (data || []).forEach(showMessage);
+}
+
+function showMessage(message) {
+  const list = document.getElementById("messages");
+
+  if (list.querySelector('[data-id="' + message.id + '"]')) return;
+
+  const el = document.createElement("div");
+  el.className = "msg" +
+    (message.sender_id === currentUser.id ? " me" : "");
+  el.dataset.id = message.id;
+  el.textContent = message.content;
   list.appendChild(el);
   list.scrollTop = list.scrollHeight;
 }
