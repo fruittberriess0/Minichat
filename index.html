@@ -1,0 +1,87 @@
+<!DOCTYPE html>
+
+<html lang="ru">
+
+<head>
+
+<meta charset="UTF-8">
+
+<meta name="viewport" content="width=device-width, initial-scale=1">
+
+<title>MiniChat ❤️</title>
+
+<style>
+
+*{box-sizing:border-box}
+
+body{margin:0;font-family:Arial,sans-serif;background:#17212b;color:white}
+
+header{background:#242f3d;padding:18px;font-size:22px;font-weight:bold}
+
+.status{font-size:12px;color:#8fa7ba;margin-top:5px}
+
+#messages{height:calc(100dvh - 140px);overflow:auto;padding:15px;display:flex;flex-direction:column;gap:10px}
+
+.msg{background:#242f3d;padding:11px 14px;border-radius:15px;max-width:80%;align-self:flex-start;overflow-wrap:anywhere}
+
+.me{background:#2b5278;align-self:flex-end}
+
+footer{position:fixed;bottom:0;left:0;right:0;display:flex;gap:8px;padding:12px;background:#242f3d}
+
+input{flex:1;min-width:0;border:0;border-radius:22px;padding:13px;font-size:16px;outline:none}
+
+button{border:0;border-radius:22px;background:#3390ec;color:white;padding:0 18px;font-size:16px}
+
+</style>
+
+</head>
+
+<body>
+
+<header>MiniChat ❤️<div class="status">Наш маленький мир</div></header>
+
+<div id="messages"><div class="msg">Привет, любимая ❤️ Это наш MiniChat!</div></div>
+
+<footer>
+
+<input id="message" placeholder="Написать сообщение..." autocomplete="off">
+
+<button onclick="sendMessage()">➤</button>
+
+</footer>
+
+<script>
+
+function sendMessage(){
+
+ const input=document.getElementById('message');
+
+ const value=input.value.trim();
+
+ if(!value)return;
+
+ const msg=document.createElement('div');
+
+ msg.className='msg me';
+
+ msg.textContent=value;
+
+ document.getElementById('messages').appendChild(msg);
+
+ input.value='';
+
+ document.getElementById('messages').scrollTop=999999;
+
+}
+
+document.getElementById('message').addEventListener('keydown',e=>{
+
+ if(e.key==='Enter')sendMessage();
+
+});
+
+</script>
+
+</body>
+
+</html>
