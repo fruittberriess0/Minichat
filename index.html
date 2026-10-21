@@ -1512,5 +1512,24 @@ alert("Не найдены элементы: " + missing.join(", "));
   console.log("MiniChat 3.0: проверка интерфейса завершена.");
 })();
 </script>
+
+<!-- MiniChat 3.0: недостающие элементы интерфейса -->
+<div id="conversationTitle" class="hidden">Наш чат</div>
+<div id="conversationSubtitle" class="hidden">MiniChat</div>
+
+<div id="messageList" class="hidden"></div>
+<textarea id="messageInput" class="hidden"></textarea>
+<button id="sendButton" class="hidden" type="button">Отправить</button>
+
+<input id="attachmentInput" class="hidden" type="file" accept="image/*,.pdf,.doc,.docx,.txt">
+<button id="attachmentButton" class="hidden" type="button">Прикрепить файл</button>
+<button id="backButton" class="hidden" type="button">Назад</button>
+
+<input id="profileUsername" class="hidden" type="text">
+<input id="profileStatus" class="hidden" type="text">
+<img id="profileAvatar" class="hidden" alt="Аватар">
+<button id="profileSaveButton" class="hidden" type="button">Сохранить профиль</button>
+<input id="avatarInput" class="hidden" type="file" accept="image/*">
+
 </body>
 </html>
