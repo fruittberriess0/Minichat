@@ -1,123 +1,297 @@
-
 <!DOCTYPE html>
 <html lang="ru">
 <head>
 <meta charset="UTF-8">
-<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+<meta name="theme-color" content="#17212b">
 <title>MiniChat ❤️</title>
 <style>
 *{box-sizing:border-box}
-body{margin:0;font-family:Arial,sans-serif;background:#17212b;color:white}
-header{background:#242f3d;padding:18px;font-size:22px;font-weight:bold}
-.status{font-size:12px;color:#8fa7ba;margin-top:5px}
-#messages{height:calc(100dvh - 140px);overflow:auto;padding:15px;display:flex;flex-direction:column;gap:10px}
-.msg{background:#242f3d;padding:11px 14px;border-radius:15px;max-width:80%;align-self:flex-start;overflow-wrap:anywhere}
-.me{background:#2b5278;align-self:flex-end}
-footer{position:fixed;bottom:0;left:0;right:0;display:flex;gap:8px;padding:12px;background:#242f3d}
-input{flex:1;min-width:0;border:0;border-radius:22px;padding:13px;font-size:16px;outline:none}
-button{border:0;border-radius:22px;background:#3390ec;color:white;padding:12px 18px;font-size:16px}
-#login{padding:15px}
-#login input{width:100%;margin:6px 0}
-#login button{width:100%;margin-top:8px}
+:root{--bg:#17212b;--panel:#242f3d;--blue:#3390ec;--mine:#2b5278;--muted:#9aafc1}
+body{margin:0;background:var(--bg);color:#fff;font-family:Arial,sans-serif}
+button,input,textarea{font:inherit}
+button{border:0;border-radius:12px;background:var(--blue);color:#fff;padding:11px 14px;cursor:pointer}
+button:disabled{opacity:.5}
+input,textarea{border:0;border-radius:12px;padding:12px;min-width:0}
+header{display:flex;align-items:center;gap:11px;padding:12px 15px;background:var(--panel);min-height:70px}
+#topAvatar{width:44px;height:44px;border-radius:50%;object-fit:cover;background:#526477}
+.brand{font-size:21px;font-weight:bold}
+.small{font-size:12px;color:var(--muted);margin-top:4px}
+#login{max-width:420px;margin:35px auto;padding:20px}
+#login input,#login button{display:block;width:100%;margin:9px 0}
+#login h2{margin-bottom:8px}
+#notice{display:none;padding:12px;color:#ffd18b;font-size:13px}
+#profilePanel{display:none;background:#1e2a37;padding:12px;gap:8px;flex-wrap:wrap}
+#profilePanel input{width:100%;flex:1}
+#profilePanel button{font-size:13px}
+#messages{height:calc(100dvh - 160px);overflow-y:auto;padding:14px;display:flex;flex-direction:column;gap:12px}
+.line{display:flex;align-items:flex-end;gap:7px;max-width:90%;align-self:flex-start}
+.line.mine{align-self:flex-end;flex-direction:row-reverse}
+.msgAvatar{width:29px;height:29px;border-radius:50%;object-fit:cover;background:#526477;flex-shrink:0}
+.bubble{background:var(--panel);padding:10px 12px;border-radius:15px 15px 15px 4px;overflow-wrap:anywhere;min-width:60px}
+.mine .bubble{background:var(--mine);border-radius:15px 15px 4px 15px}
+.msgText{white-space:pre-wrap;overflow-wrap:anywhere}
+.meta{font-size:10px;color:#c8d8e5;text-align:right;margin-top:6px}
+.mediaImage{display:block;max-width:min(65vw,320px);max-height:350px;border-radius:9px}
+audio{width:min(65vw,270px);height:42px}
+#typing{height:19px;padding:0 16px;color:var(--muted);font-size:12px}
+#composer{display:none;position:fixed;bottom:0;left:0;right:0;align-items:center;gap:6px;padding:9px 9px calc(9px + env(safe-area-inset-bottom));background:var(--panel)}
+#message{flex:1;border-radius:22px;width:40px}
+.iconBtn{padding:10px 12px;border-radius:50%;font-size:18px;flex-shrink:0}
+#fileInput,#avatarInput{display:none}
+#recordStatus{font-size:11px;color:#ffaaaa}
+@media(min-width:700px){
+#messages{max-width:850px;margin:auto}
+#composer{padding-left:max(10px,calc((100vw - 830px)/2));padding-right:max(10px,calc((100vw - 830px)/2))}
+}
 </style>
 </head>
 <body>
-<header>MiniChat ❤️<div class="status" id="status">Войди, чтобы начать общение</div></header>
+<header>
+  <img id="topAvatar" alt="Аватар" hidden>
+  <div style="flex:1">
+    <div class="brand">MiniChat ❤️</div>
+    <div class="small" id="status">Твой личный чат</div>
+  </div>
+  <button id="profileButton" style="display:none">Профиль</button>
+</header>
 
-<div id="login">
-  <input id="email" type="email" placeholder="Твой email" autocomplete="email">
-  <input id="password" type="password" placeholder="Пароль" autocomplete="current-password">
-  <button id="loginButton">Войти</button>
+<div id="notice"></div>
+
+<section id="login">
+  <h2>MiniChat ❤️</h2>
+  <p class="small">Личное пространство для двоих</p>
+  <form id="loginForm">
+    <input id="email" type="email" placeholder="Email" autocomplete="username" required>
+    <input id="password" type="password" placeholder="Пароль" autocomplete="current-password" required>
+    <button id="loginButton" type="submit">Войти</button>
+  </form>
+  <p class="small">Используй свой существующий аккаунт.</p>
+</section>
+
+<section id="profilePanel">
+  <input id="profileName" maxlength="40" placeholder="Твоё имя">
+  <input id="profileStatus" maxlength="100" placeholder="Статус">
+  <button id="saveProfile">Сохранить</button>
+  <button id="chooseAvatar">Изменить аватарку</button>
+  <button id="logoutButton" style="background:#596777">Выйти</button>
+  <input id="avatarInput" type="file" accept="image/*">
+</section>
+
+<main id="messages" style="display:none"></main>
+<div id="typing"></div>
+
+<div id="composer">
+  <input id="fileInput" type="file" accept="image/*">
+  <button class="iconBtn" id="photoButton" title="Фото">＋</button>
+  <button class="iconBtn" id="recordButton" title="Голосовое">🎙</button>
+  <span id="recordStatus"></span>
+  <input id="message" placeholder="Сообщение..." autocomplete="off">
+  <button class="iconBtn" id="sendButton" title="Отправить">➤</button>
 </div>
-
-<div id="messages" style="display:none"></div>
-<footer id="footer" style="display:none">
-  <input id="message" placeholder="Написать сообщение..." autocomplete="off">
-  <button id="sendButton">➤</button>
-</footer>
 
 <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
 <script>
+
 const SUPABASE_URL = "https://gjqpucsbfuoqoncmdfbj.supabase.co";
 const SUPABASE_KEY = "sb_publishable_S1M6veMpHEUzwpA0HeYwlw_IkQYqIzr";
+const BUCKET = "chat-media";
 
-const statusEl = document.getElementById("status");
-let db = null;
-let currentUser = null;
-let chatId = null;
+const $ = id => document.getElementById(id);
 
-document.getElementById("loginButton").addEventListener("click", startChat);
-document.getElementById("sendButton").addEventListener("click", sendMessage);
-
-document.getElementById("message").addEventListener("keydown", e => {
-  if (e.key === "Enter") sendMessage();
+const db = window.supabase.createClient(SUPABASE_URL, SUPABASE_KEY, {
+  auth: {
+    persistSession: true,
+    autoRefreshToken: true,
+    detectSessionInUrl: true
+  }
 });
 
-async function startChat() {
-  const email = document.getElementById("email").value.trim();
-  const password = document.getElementById("password").value;
-  const button = document.getElementById("loginButton");
+let currentUser = null;
+let chatId = null;
+let myProfile = {};
+let profiles = {};
+let chatChannel = null;
+let recorder = null;
+let recordingChunks = [];
+let recordingStream = null;
+let busy = false;
+let typingTimer = null;
+let signedUrls = new Map();
 
-  if (!email || !password) {
-    alert("Введи email и пароль");
+function notice(message) {
+  $("notice").textContent = message;
+  $("notice").style.display = "block";
+}
+
+function clearNotice() {
+  $("notice").textContent = "";
+  $("notice").style.display = "none";
+}
+
+function setStatus(message) {
+  $("status").textContent = message;
+}
+
+function timeText(value) {
+  if (!value) return "";
+  return new Date(value).toLocaleTimeString("ru-RU", {
+    hour: "2-digit",
+    minute: "2-digit"
+  });
+}
+
+function escapeText(value) {
+  return String(value || "");
+}
+
+async function getMediaUrl(path) {
+  if (!path) return "";
+  if (signedUrls.has(path)) return signedUrls.get(path);
+
+  const { data, error } = await db.storage
+    .from(BUCKET)
+    .createSignedUrl(path, 3600);
+
+  if (error) {
+    console.error("Не удалось открыть файл:", error.message);
+    return "";
+  }
+
+  signedUrls.set(path, data.signedUrl);
+  return data.signedUrl;
+}
+
+async function getProfile(userId) {
+  if (profiles[userId]) return profiles[userId];
+
+  const { data, error } = await db
+    .from("profiles")
+    .select("id,username,avatar_path,status_text")
+    .eq("id", userId)
+    .maybeSingle();
+
+  if (error) console.error("Ошибка профиля:", error.message);
+
+  profiles[userId] = data || {
+    id: userId,
+    username: "Пользователь",
+    avatar_path: null,
+    status_text: ""
+  };
+
+  return profiles[userId];
+}
+
+async function refreshMyProfile() {
+  const { data, error } = await db
+    .from("profiles")
+    .select("id,username,avatar_path,status_text")
+    .eq("id", currentUser.id)
+    .maybeSingle();
+
+  if (error) throw error;
+
+  if (!data) {
+    const { data: created, error: createError } = await db
+      .from("profiles")
+      .insert({
+        id: currentUser.id,
+        username: currentUser.email.split("@")[0],
+        status_text: ""
+      })
+      .select()
+      .single();
+
+    if (createError) throw createError;
+    myProfile = created;
+  } else {
+    myProfile = data;
+  }
+
+  profiles[currentUser.id] = myProfile;
+  $("profileName").value = myProfile.username || "";
+  $("profileStatus").value = myProfile.status_text || "";
+
+  if (myProfile.avatar_path) {
+    const url = await getMediaUrl(myProfile.avatar_path);
+    if (url) {
+      $("topAvatar").src = url;
+      $("topAvatar").hidden = false;
+    }
+  } else {
+    $("topAvatar").hidden = true;
+  }
+}
+
+async function startLogin(event) {
+  event.preventDefault();
+
+  const email = $("email").value.trim();
+  const password = $("password").value;
+
+  if (!email || !password) return;
+
+  $("loginButton").disabled = true;
+  $("loginButton").textContent = "Входим...";
+  clearNotice();
+
+  const { data, error } = await db.auth.signInWithPassword({
+    email,
+    password
+  });
+
+  $("loginButton").disabled = false;
+  $("loginButton").textContent = "Войти";
+
+  if (error) {
+    notice("Ошибка входа: " + error.message);
     return;
   }
 
-  if (!window.supabase) {
-    alert("Не загрузилась библиотека Supabase. Обнови страницу и попробуй снова.");
-    return;
-  }
+  await openChat(data.user);
+}
 
-  button.disabled = true;
-  statusEl.textContent = "Входим...";
+async function openChat(user) {
+  if (busy) return;
+  busy = true;
+  currentUser = user;
+  clearNotice();
+  setStatus("Открываем переписку...");
 
   try {
-    if (!db) {
-      db = window.supabase.createClient(SUPABASE_URL, SUPABASE_KEY);
-    }
-
-    const { data, error } = await db.auth.signInWithPassword({
-      email: email,
-      password: password
-    });
-
-    if (error) throw error;
-
-    currentUser = data.user;
-
-    const { data: memberships, error: memberError } = await db
+    const { data: memberships, error } = await db
       .from("chat_members")
       .select("chat_id")
       .eq("user_id", currentUser.id);
 
-    if (memberError) throw memberError;
+    if (error) throw error;
 
     if (!memberships || memberships.length === 0) {
-      throw new Error("Этот аккаунт ещё не добавлен в чат.");
+      throw new Error("Этот аккаунт ещё не добавлен в chat_members.");
     }
 
     chatId = memberships[0].chat_id;
 
-    document.getElementById("login").style.display = "none";
-    document.getElementById("messages").style.display = "flex";
-    document.getElementById("footer").style.display = "flex";
-    statusEl.textContent = "Ты вошёл ❤️";
+    await refreshMyProfile();
+
+    $("login").style.display = "none";
+    $("messages").style.display = "flex";
+    $("composer").style.display = "flex";
+    $("profileButton").style.display = "block";
+
+    setStatus(myProfile.status_text || "В сети ❤️");
 
     await loadMessages();
+    await markRead();
+    await subscribeChat();
 
-    db.channel("minichat-" + chatId)
-      .on("postgres_changes", {
-        event: "INSERT",
-        schema: "public",
-        table: "messages",
-        filter: "chat_id=eq." + chatId
-      }, payload => showMessage(payload.new))
-      .subscribe();
   } catch (error) {
-    statusEl.textContent = "Не удалось войти";
-    alert("Ошибка: " + error.message);
+    console.error(error);
+    notice("Не удалось открыть чат: " + error.message);
+    setStatus("Не удалось загрузить чат");
   } finally {
-    button.disabled = false;
+    busy = false;
   }
 }
 
@@ -128,55 +302,504 @@ async function loadMessages() {
     .eq("chat_id", chatId)
     .order("created_at", { ascending: true });
 
-  if (error) {
-    alert("Ошибка загрузки сообщений: " + error.message);
-    return;
+  if (error) throw error;
+
+  const list = $("messages");
+  list.innerHTML = "";
+
+  for (const message of (data || [])) {
+    await showMessage(message);
   }
 
-  const list = document.getElementById("messages");
-  list.innerHTML = "";
-  (data || []).forEach(showMessage);
+  list.scrollTop = list.scrollHeight;
 }
 
-function showMessage(message) {
-  const list = document.getElementById("messages");
+async function showMessage(message) {
+  if (!message || !currentUser) return;
+
+  const list = $("messages");
 
   if (list.querySelector('[data-id="' + message.id + '"]')) return;
 
-  const el = document.createElement("div");
-  el.className = "msg" +
-    (message.sender_id === currentUser.id ? " me" : "");
-  el.dataset.id = message.id;
-  el.textContent = message.content;
+  const mine = message.sender_id === currentUser.id;
+  const profile = await getProfile(message.sender_id);
 
-  list.appendChild(el);
+  const line = document.createElement("div");
+  line.className = "line" + (mine ? " mine" : "");
+  line.dataset.id = message.id;
+
+  const avatar = document.createElement("img");
+  avatar.className = "msgAvatar";
+  avatar.alt = "";
+  avatar.src = "";
+
+  if (profile.avatar_path) {
+    avatar.src = await getMediaUrl(profile.avatar_path);
+  }
+
+  const bubble = document.createElement("div");
+  bubble.className = "bubble";
+
+  const name = document.createElement("div");
+  name.className = "small";
+  name.textContent = mine ? "Ты" : (profile.username || "Пользователь");
+  bubble.appendChild(name);
+
+  if (message.message_type === "image" && message.media_path) {
+    const url = await getMediaUrl(message.media_path);
+
+    if (url) {
+      const image = document.createElement("img");
+      image.className = "mediaImage";
+      image.src = url;
+      image.alt = "Фото";
+      image.loading = "lazy";
+      bubble.appendChild(image);
+    } else {
+      const text = document.createElement("div");
+      text.textContent = "Не удалось загрузить фото";
+      bubble.appendChild(text);
+    }
+  } else if (message.message_type === "audio" && message.media_path) {
+    const url = await getMediaUrl(message.media_path);
+
+    if (url) {
+      const audio = document.createElement("audio");
+      audio.controls = true;
+      audio.src = url;
+      bubble.appendChild(audio);
+    } else {
+      const text = document.createElement("div");
+      text.textContent = "Не удалось загрузить голосовое";
+      bubble.appendChild(text);
+    }
+  } else {
+    const text = document.createElement("div");
+    text.className = "msgText";
+    text.textContent = escapeText(message.content);
+    bubble.appendChild(text);
+  }
+
+  const meta = document.createElement("div");
+  meta.className = "meta";
+  meta.textContent = timeText(message.created_at);
+
+  if (mine) {
+    meta.textContent += message.read_at ? " ✓✓" : " ✓";
+  }
+
+  bubble.appendChild(meta);
+  line.appendChild(avatar);
+  line.appendChild(bubble);
+  list.appendChild(line);
   list.scrollTop = list.scrollHeight;
 }
 
 async function sendMessage() {
-  const input = document.getElementById("message");
+  const input = $("message");
   const content = input.value.trim();
 
   if (!content || !currentUser || !chatId) return;
 
-  const button = document.getElementById("sendButton");
-  button.disabled = true;
+  $("sendButton").disabled = true;
 
-  try {
-    const { error } = await db.from("messages").insert({
-      chat_id: chatId,
-      sender_id: currentUser.id,
-      content: content
-    });
+  const { error } = await db.from("messages").insert({
+    chat_id: chatId,
+    sender_id: currentUser.id,
+    content: content,
+    message_type: "text"
+  });
 
-    if (error) throw error;
-    input.value = "";
-  } catch (error) {
-    alert("Ошибка отправки: " + error.message);
-  } finally {
-    button.disabled = false;
+  $("sendButton").disabled = false;
+
+  if (error) {
+    notice("Не удалось отправить сообщение: " + error.message);
+    return;
+  }
+
+  input.value = "";
+  clearNotice();
+}
+
+async function markRead() {
+  if (!chatId || !currentUser) return;
+
+  const { error } = await db.rpc("mark_chat_read", {
+    p_chat_id: chatId
+  });
+
+  if (error) {
+    console.warn("Не удалось отметить прочитанное:", error.message);
   }
 }
+
+async function subscribeChat() {
+  if (chatChannel) {
+    await db.removeChannel(chatChannel);
+    chatChannel = null;
+  }
+
+  chatChannel = db.channel("minichat-" + chatId);
+
+  chatChannel
+    .on("postgres_changes", {
+      event: "*",
+      schema: "public",
+      table: "messages",
+      filter: "chat_id=eq." + chatId
+    }, async payload => {
+      if (payload.eventType === "INSERT") {
+        await showMessage(payload.new);
+
+        if (payload.new.sender_id !== currentUser.id) {
+          await markRead();
+        }
+      }
+
+      if (payload.eventType === "UPDATE") {
+        const old = $("messages").querySelector(
+          '[data-id="' + payload.new.id + '"]'
+        );
+
+        if (old) {
+          old.remove();
+          await showMessage(payload.new);
+        }
+      }
+    })
+    .on("broadcast", { event: "typing" }, payload => {
+      if (payload.payload?.user_id !== currentUser.id) {
+        $("typing").textContent = "Собеседник печатает...";
+        clearTimeout(typingTimer);
+        typingTimer = setTimeout(() => {
+          $("typing").textContent = "";
+        }, 1800);
+      }
+    })
+    .subscribe();
+}
+
+async function sendTyping() {
+  if (!chatChannel || !currentUser) return;
+
+  await chatChannel.send({
+    type: "broadcast",
+    event: "typing",
+    payload: { user_id: currentUser.id }
+  });
+}
+
+async function uploadMedia(file, type) {
+  if (!currentUser || !chatId || !file) return;
+
+  const ext = (file.name && file.name.includes("."))
+    ? file.name.split(".").pop().toLowerCase()
+    : (type === "audio" ? "m4a" : "jpg");
+
+  const path = currentUser.id + "/" + chatId + "/" +
+    Date.now() + "-" + Math.random().toString(36).slice(2) + "." + ext;
+
+  const { error: uploadError } = await db.storage
+    .from(BUCKET)
+    .upload(path, file, {
+      contentType: file.type || undefined,
+      upsert: false
+    });
+
+  if (uploadError) throw uploadError;
+
+  const { error: insertError } = await db.from("messages").insert({
+    chat_id: chatId,
+    sender_id: currentUser.id,
+    content: type === "image" ? "Фото" : "Голосовое сообщение",
+    message_type: type,
+    media_path: path
+  });
+
+  if (insertError) {
+    notice("Файл загружен, но сообщение не отправлено: " + insertError.message);
+    throw insertError;
+  }
+}
+
+async function choosePhoto() {
+  $("fileInput").click();
+}
+
+$("fileInput").addEventListener("change", async event => {
+  const file = event.target.files[0];
+  if (!file) return;
+
+  if (file.size > 15 * 1024 * 1024) {
+    notice("Фото должно быть меньше 15 МБ.");
+    event.target.value = "";
+    return;
+  }
+
+  try {
+    $("photoButton").disabled = true;
+    clearNotice();
+    await uploadMedia(file, "image");
+  } catch (error) {
+    notice("Ошибка отправки фото: " + error.message);
+  } finally {
+    $("photoButton").disabled = false;
+    event.target.value = "";
+  }
+});
+
+async function saveProfile() {
+  if (!currentUser) return;
+
+  const username = $("profileName").value.trim() ||
+    currentUser.email.split("@")[0];
+
+  const statusText = $("profileStatus").value.trim();
+
+  const { data, error } = await db.from("profiles").upsert({
+    id: currentUser.id,
+    username: username,
+    status_text: statusText,
+    avatar_path: myProfile.avatar_path || null
+  }, { onConflict: "id" }).select().single();
+
+  if (error) {
+    notice("Ошибка сохранения профиля: " + error.message);
+    return;
+  }
+
+  myProfile = data;
+  profiles[currentUser.id] = data;
+  setStatus(statusText || "В сети ❤️");
+  notice("Профиль сохранён ❤️");
+}
+
+async function changeAvatar(event) {
+  const file = event.target.files[0];
+  if (!file || !currentUser || !chatId) return;
+
+  if (!file.type.startsWith("image/")) {
+    notice("Выбери файл изображения.");
+    return;
+  }
+
+  if (file.size > 8 * 1024 * 1024) {
+    notice("Аватарка должна быть меньше 8 МБ.");
+    return;
+  }
+
+  try {
+    const ext = file.name.includes(".")
+      ? file.name.split(".").pop().toLowerCase()
+      : "jpg";
+
+    const path = currentUser.id + "/" + chatId +
+      "/avatar-" + Date.now() + "." + ext;
+
+    const { error: uploadError } = await db.storage
+      .from(BUCKET)
+      .upload(path, file, {
+        contentType: file.type || undefined,
+        upsert: false
+      });
+
+    if (uploadError) throw uploadError;
+
+    const { data, error } = await db.from("profiles").upsert({
+      id: currentUser.id,
+      username: $("profileName").value.trim() ||
+        currentUser.email.split("@")[0],
+      status_text: $("profileStatus").value.trim(),
+      avatar_path: path
+    }, { onConflict: "id" }).select().single();
+
+    if (error) throw error;
+
+    myProfile = data;
+    profiles[currentUser.id] = data;
+    signedUrls.delete(path);
+
+    const url = await getMediaUrl(path);
+    if (url) {
+      $("topAvatar").src = url;
+      $("topAvatar").hidden = false;
+    }
+
+    notice("Аватарка обновлена ❤️");
+  } catch (error) {
+    notice("Ошибка аватарки: " + error.message);
+  } finally {
+    event.target.value = "";
+  }
+}
+
+async function toggleRecording() {
+  if (recorder && recorder.state === "recording") {
+    recorder.stop();
+    $("recordButton").textContent = "🎙";
+    $("recordStatus").textContent = "Обрабатываем...";
+    return;
+  }
+
+  if (!navigator.mediaDevices?.getUserMedia ||
+      typeof MediaRecorder === "undefined") {
+    notice("Запись голосовых не поддерживается этим браузером. Попробуй обновить iOS или открыть сайт в Safari.");
+    return;
+  }
+
+  try {
+    recordingStream = await navigator.mediaDevices.getUserMedia({
+      audio: true
+    });
+
+    recordingChunks = [];
+
+    const options = MediaRecorder.isTypeSupported("audio/mp4")
+      ? { mimeType: "audio/mp4" }
+      : undefined;
+
+    recorder = new MediaRecorder(recordingStream, options);
+
+    recorder.ondataavailable = event => {
+      if (event.data.size > 0) recordingChunks.push(event.data);
+    };
+
+    recorder.onerror = () => {
+      notice("Не удалось записать голосовое сообщение.");
+      stopStream();
+    };
+
+    recorder.onstop = async () => {
+      const blob = new Blob(recordingChunks, {
+        type: recorder.mimeType || "audio/mp4"
+      });
+
+      stopStream();
+      $("recordStatus").textContent = "";
+
+      try {
+        if (blob.size === 0) {
+          notice("Запись пустая. Попробуй ещё раз.");
+          return;
+        }
+
+        const ext = blob.type.includes("mp4") ? "m4a" : "webm";
+        const file = new File([blob], "voice-" + Date.now() + "." + ext, {
+          type: blob.type
+        });
+
+        await uploadMedia(file, "audio");
+        clearNotice();
+      } catch (error) {
+        notice("Ошибка отправки голосового: " + error.message);
+      }
+    };
+
+    recorder.start();
+    $("recordButton").textContent = "⏹";
+    $("recordStatus").textContent = "Идёт запись… нажми ⏹";
+  } catch (error) {
+    notice("Нет доступа к микрофону. Разреши Safari использовать микрофон и попробуй снова.");
+  }
+}
+
+function stopStream() {
+  if (recordingStream) {
+    recordingStream.getTracks().forEach(track => track.stop());
+    recordingStream = null;
+  }
+}
+
+$("loginForm").addEventListener("submit", startLogin);
+$("sendButton").addEventListener("click", sendMessage);
+$("photoButton").addEventListener("click", choosePhoto);
+$("recordButton").addEventListener("click", toggleRecording);
+$("saveProfile").addEventListener("click", saveProfile);
+
+$("chooseAvatar").addEventListener("click", () => {
+  $("avatarInput").click();
+});
+
+$("avatarInput").addEventListener("change", changeAvatar);
+
+$("profileButton").addEventListener("click", () => {
+  const panel = $("profilePanel");
+  panel.style.display =
+    panel.style.display === "flex" ? "none" : "flex";
+});
+
+$("logoutButton").addEventListener("click", async () => {
+  if (!confirm("Выйти из аккаунта на этом устройстве?")) return;
+
+  if (chatChannel) {
+    await db.removeChannel(chatChannel);
+    chatChannel = null;
+  }
+
+  stopStream();
+
+  const { error } = await db.auth.signOut();
+
+  if (error) {
+    notice("Ошибка выхода: " + error.message);
+    return;
+  }
+
+  currentUser = null;
+  chatId = null;
+  myProfile = {};
+  profiles = {};
+  signedUrls.clear();
+
+  $("messages").innerHTML = "";
+  $("messages").style.display = "none";
+  $("composer").style.display = "none";
+  $("profilePanel").style.display = "none";
+  $("profileButton").style.display = "none";
+  $("topAvatar").hidden = true;
+  $("login").style.display = "block";
+  $("typing").textContent = "";
+
+  $("email").value = "";
+  $("password").value = "";
+
+  setStatus("Ты вышел из аккаунта");
+});
+
+$("message").addEventListener("keydown", event => {
+  if (event.key === "Enter" && !event.shiftKey) {
+    event.preventDefault();
+    sendMessage();
+  }
+});
+
+$("message").addEventListener("input", sendTyping);
+
+async function restoreSession() {
+  setStatus("Проверяем авторизацию...");
+
+  const { data, error } = await db.auth.getSession();
+
+  if (error) {
+    notice("Не удалось восстановить сессию: " + error.message);
+    setStatus("Войди в аккаунт");
+    return;
+  }
+
+  if (data.session?.user) {
+    await openChat(data.session.user);
+  } else {
+    setStatus("Войди, чтобы начать общение");
+  }
+}
+
+db.auth.onAuthStateChange((event, session) => {
+  if (event === "SIGNED_OUT") {
+    currentUser = null;
+  }
+});
+
+restoreSession();
 </script>
 </body>
 </html>
