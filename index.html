@@ -1486,6 +1486,7 @@ button {
   ];
 
   const missing = requiredIds.filter(id => !$(id));
+alert("Не найдены элементы: " + missing.join(", "));
 
   if (missing.length) {
     console.error(
