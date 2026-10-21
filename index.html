@@ -1,3 +1,4 @@
+
 <!DOCTYPE html>
 <html lang="ru">
 <head>
@@ -26,13 +27,13 @@ button{border:0;border-radius:22px;background:#3390ec;color:white;padding:12px 1
 <div id="login">
   <input id="email" type="email" placeholder="Твой email" autocomplete="email">
   <input id="password" type="password" placeholder="Пароль" autocomplete="current-password">
-  <button onclick="startChat()">Войти</button>
+  <button id="loginButton">Войти</button>
 </div>
 
 <div id="messages" style="display:none"></div>
 <footer id="footer" style="display:none">
   <input id="message" placeholder="Написать сообщение..." autocomplete="off">
-  <button onclick="sendMessage()">➤</button>
+  <button id="sendButton">➤</button>
 </footer>
 
 <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
@@ -40,62 +41,84 @@ button{border:0;border-radius:22px;background:#3390ec;color:white;padding:12px 1
 const SUPABASE_URL = "https://gjqpucsbfuoqoncmdfbj.supabase.co";
 const SUPABASE_KEY = "sb_publishable_S1M6veMpHEUzwpA0HeYwlw_IkQYqIzr";
 
-const db = supabase.createClient(SUPABASE_URL, SUPABASE_KEY);
+const statusEl = document.getElementById("status");
+let db = null;
 let currentUser = null;
 let chatId = null;
+
+document.getElementById("loginButton").addEventListener("click", startChat);
+document.getElementById("sendButton").addEventListener("click", sendMessage);
+
+document.getElementById("message").addEventListener("keydown", e => {
+  if (e.key === "Enter") sendMessage();
+});
 
 async function startChat() {
   const email = document.getElementById("email").value.trim();
   const password = document.getElementById("password").value;
-  const status = document.getElementById("status");
+  const button = document.getElementById("loginButton");
 
   if (!email || !password) {
     alert("Введи email и пароль");
     return;
   }
 
-  status.textContent = "Входим...";
-
-  const { data, error } = await db.auth.signInWithPassword({
-    email, password
-  });
-
-  if (error) {
-    status.textContent = "Не удалось войти";
-    alert("Ошибка входа: " + error.message);
+  if (!window.supabase) {
+    alert("Не загрузилась библиотека Supabase. Обнови страницу и попробуй снова.");
     return;
   }
 
-  currentUser = data.user;
+  button.disabled = true;
+  statusEl.textContent = "Входим...";
 
-  const { data: memberships, error: memberError } = await db
-    .from("chat_members")
-    .select("chat_id")
-    .eq("user_id", currentUser.id);
+  try {
+    if (!db) {
+      db = window.supabase.createClient(SUPABASE_URL, SUPABASE_KEY);
+    }
 
-  if (memberError  !memberships  memberships.length === 0) {
-    alert("Не удалось найти чат: " +
-      (memberError ? memberError.message : "аккаунт не добавлен в чат"));
-    return;
+    const { data, error } = await db.auth.signInWithPassword({
+      email: email,
+      password: password
+    });
+
+    if (error) throw error;
+
+    currentUser = data.user;
+
+    const { data: memberships, error: memberError } = await db
+      .from("chat_members")
+      .select("chat_id")
+      .eq("user_id", currentUser.id);
+
+    if (memberError) throw memberError;
+
+    if (!memberships || memberships.length === 0) {
+      throw new Error("Этот аккаунт ещё не добавлен в чат.");
+    }
+
+    chatId = memberships[0].chat_id;
+
+    document.getElementById("login").style.display = "none";
+    document.getElementById("messages").style.display = "flex";
+    document.getElementById("footer").style.display = "flex";
+    statusEl.textContent = "Ты вошёл ❤️";
+
+    await loadMessages();
+
+    db.channel("minichat-" + chatId)
+      .on("postgres_changes", {
+        event: "INSERT",
+        schema: "public",
+        table: "messages",
+        filter: "chat_id=eq." + chatId
+      }, payload => showMessage(payload.new))
+      .subscribe();
+  } catch (error) {
+    statusEl.textContent = "Не удалось войти";
+    alert("Ошибка: " + error.message);
+  } finally {
+    button.disabled = false;
   }
-
-  chatId = memberships[0].chat_id;
-
-  document.getElementById("login").style.display = "none";
-  document.getElementById("messages").style.display = "flex";
-  document.getElementById("footer").style.display = "flex";
-  status.textContent = "Ты вошёл ❤️";
-
-  await loadMessages();
-
-  db.channel("minichat-" + chatId)
-    .on("postgres_changes", {
-      event: "INSERT",
-      schema: "public",
-      table: "messages",
-      filter: "chat_id=eq." + chatId
-    }, payload => showMessage(payload.new))
-    .subscribe();
 }
 
 async function loadMessages() {
@@ -125,6 +148,7 @@ function showMessage(message) {
     (message.sender_id === currentUser.id ? " me" : "");
   el.dataset.id = message.id;
   el.textContent = message.content;
+
   list.appendChild(el);
   list.scrollTop = list.scrollHeight;
 }
@@ -133,25 +157,26 @@ async function sendMessage() {
   const input = document.getElementById("message");
   const content = input.value.trim();
 
-  if (!content  !currentUser  !chatId) return;
+  if (!content || !currentUser || !chatId) return;
 
-  const { error } = await db.from("messages").insert({
-    chat_id: chatId,
-    sender_id: currentUser.id,
-    content: content
-  });
+  const button = document.getElementById("sendButton");
+  button.disabled = true;
 
-  if (error) {
+  try {
+    const { error } = await db.from("messages").insert({
+      chat_id: chatId,
+      sender_id: currentUser.id,
+      content: content
+    });
+
+    if (error) throw error;
+    input.value = "";
+  } catch (error) {
     alert("Ошибка отправки: " + error.message);
-    return;
+  } finally {
+    button.disabled = false;
   }
-
-  input.value = "";
 }
-
-document.getElementById("message").addEventListener("keydown", e => {
-  if (e.key === "Enter") sendMessage();
-});
 </script>
 </body>
 </html>
