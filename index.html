@@ -1,4 +1,3 @@
-
 <!DOCTYPE html>
 <html lang="ru">
 <head>
@@ -344,6 +343,66 @@ let currentProfile = null;
 let chats = [];
 let activeChat = null;
 let messages = [];
+
+let presenceTimer = null;
+let presenceChannel = null;
+let lastSeenSaveTime = 0;
+
+function formatLastSeen(value) {
+  if (!value) return "Давно не был(а) в сети";
+
+  const date = new Date(value);
+  const seconds = Math.floor((Date.now() - date.getTime()) / 1000);
+
+  if (seconds < 90) return "В сети недавно";
+  if (seconds < 3600) return `Был(а) в сети ${Math.floor(seconds / 60)} мин. назад`;
+  if (seconds < 86400) return `Был(а) в сети ${Math.floor(seconds / 3600)} ч. назад`;
+
+  return "Был(а) в сети " + date.toLocaleDateString("ru-RU", {
+    day: "numeric",
+    month: "short"
+  });
+}
+
+async function updateMyLastSeen() {
+  if (!currentUser) return;
+
+  const now = Date.now();
+  if (now - lastSeenSaveTime < 25000) return;
+  lastSeenSaveTime = now;
+
+  const { error } = await sb
+    .from("profiles")
+    .update({ last_seen: new Date().toISOString() })
+    .eq("id", currentUser.id);
+
+  if (error) {
+    console.warn("Не удалось обновить last_seen:", error.message);
+  }
+}
+
+function startPresenceUpdates() {
+  if (presenceTimer) clearInterval(presenceTimer);
+
+  updateMyLastSeen();
+  presenceTimer = setInterval(updateMyLastSeen, 30000);
+
+  document.addEventListener("visibilitychange", handlePresenceVisibility);
+}
+
+function handlePresenceVisibility() {
+  if (document.visibilityState === "visible") {
+    lastSeenSaveTime = 0;
+    updateMyLastSeen();
+  }
+}
+
+function stopPresenceUpdates() {
+  if (presenceTimer) clearInterval(presenceTimer);
+  presenceTimer = null;
+  document.removeEventListener("visibilitychange", handlePresenceVisibility);
+}
+
 let realtimeChannel = null;
 let noticeTimer = null;
 let replyToMessage = null;
