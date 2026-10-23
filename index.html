@@ -168,7 +168,7 @@ label { display:block; font-size:13px; color:var(--muted); margin-top:17px; }
   background:#0c1727; border:1px solid var(--line); border-radius:16px;
 }
 #messageInput {
-  flex:1; resize:none; border:0; outline:none; background:transparent; color:var(--text);
+  flex:1; resize:none; border:0; outline:none; backgroundа:transparent; color:var(--text);
   padding:10px 5px; max-height:140px; min-height:42px; margin:0; line-height:1.4;
 }
 #messageInput:focus { outline:none; }
@@ -526,6 +526,7 @@ $("registerButton").addEventListener("click", async () => {
 
 async function initializeUser(user) {
   currentUser = user;
+  startPresenceUpdates();
   setLoggedIn(true);
   $("loginStatus").textContent = "";
 
@@ -798,6 +799,7 @@ async function openChat(chat) {
   setMobileChatMode(true);
   renderChatList();
   await loadMessages();
+  await markMessagesAsRead();
   subscribeToMessages();
   $("messageInput").focus();
 }
@@ -824,6 +826,20 @@ async function loadMessages() {
       escapeHtml(safeError(error)) + '</div>';
   } finally {
     loadingMessages = false;
+  }
+}
+async function markMessagesAsRead() {
+  if (!currentUser || !activeChat) return;
+
+  const { error } = await sb
+    .from("messages")
+    .update({ read_at: new Date().toISOString() })
+    .eq("chat_id", activeChat.id)
+    .neq("sender_id", currentUser.id)
+    .is("read_at", null);
+
+  if (error) {
+    console.warn("Не удалось отметить сообщения прочитанными:", error.message);
   }
 }
 
