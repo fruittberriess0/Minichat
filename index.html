@@ -5,7 +5,7 @@
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
 <meta name="theme-color" content="#101b2b">
 <title>MiniChat ❤️</title>
-<script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
+<script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2.45.0"></script>
 <style>
 :root {
   --bg:#0b1220;
@@ -168,7 +168,7 @@ label { display:block; font-size:13px; color:var(--muted); margin-top:17px; }
   background:#0c1727; border:1px solid var(--line); border-radius:16px;
 }
 #messageInput {
-  flex:1; resize:none; border:0; outline:none; backgroundа:transparent; color:var(--text);
+  flex:1; resize:none; border:0; outline:none; background:transparent; color:var(--text);
   padding:10px 5px; max-height:140px; min-height:42px; margin:0; line-height:1.4;
 }
 #messageInput:focus { outline:none; }
@@ -392,6 +392,7 @@ function startPresenceUpdates() {
 
 function handlePresenceVisibility() {
   if (document.visibilityState === "visible") {
+    if (typeof markMessagesAsRead === "function") markMessagesAsRead();
     lastSeenSaveTime = 0;
     updateMyLastSeen();
   }
@@ -409,6 +410,37 @@ let replyToMessage = null;
 let sending = false;
 let loadingMessages = false;
 let lastRenderedChatId = null;
+let profilesById = {};
+let otherProfile = null;
+
+async function loadMembers() {
+  profilesById = {};
+  otherProfile = null;
+  if (!activeChat) return;
+  try {
+    const {data: members} = await sb.from("chat_members").select("user_id").eq("chat_id", activeChat.id);
+    const ids = (members || []).map(m => m.user_id);
+    if (!ids.length) return;
+    const {data: profs} = await sb.from("profiles").select("*").in("id", ids);
+    (profs || []).forEach(p => profilesById[p.id] = p);
+    if (!activeChat.is_group) {
+      otherProfile = (profs || []).find(p => p.id !== currentUser.id) || null;
+    }
+  } catch (e) {
+    console.warn("Не удалось загрузить участников:", e);
+  }
+  updateHeaderStatus();
+}
+
+function updateHeaderStatus() {
+  if (!activeChat) return;
+  if (otherProfile) {
+    $("headerTitle").textContent = activeChat.title || otherProfile.username || chatTitle(activeChat);
+    $("headerStatus").textContent = formatLastSeen(otherProfile.last_seen);
+    setAvatarElement($("headerAvatar"), otherProfile, otherProfile.username);
+  }
+}
+setInterval(() => { if (otherProfile && activeChat) loadMembers(); }, 60000);
 
 function escapeHtml(value) {
   return String(value ?? "").replace(/[&<>"']/g, char => ({
@@ -561,6 +593,7 @@ sb.auth.onAuthStateChange((event, session) => {
     activeChat = null;
     messages = [];
     removeRealtime();
+    stopPresenceUpdates();
     setLoggedIn(false);
   }
 });
@@ -798,7 +831,7 @@ async function openChat(chat) {
   $("messages").innerHTML = '<div class="empty-chat">Загружаем сообщения...</div>';
   setMobileChatMode(true);
   renderChatList();
-  await loadMessages();
+  await Promise.all([loadMembers(), loadMessages()]);
   await markMessagesAsRead();
   subscribeToMessages();
   $("messageInput").focus();
@@ -845,7 +878,8 @@ async function togglePinMessage(message) {
     return;
   }
 
-  await loadMessages();
+  message.is_pinned = nextPinned;
+  renderMessages();
   showNotice(nextPinned ? "Сообщение закреплено 📌" : "Сообщение откреплено");
 }
 async function markMessagesAsRead() {
@@ -887,7 +921,7 @@ function renderMessages() {
     if (!own) {
       const author = document.createElement("div");
       author.className = "message-author";
-      author.textContent = message.sender_id === currentUser?.id ? "Вы" : "Собеседник";
+      author.textContent = profilesById[message.sender_id]?.username || "Собеседник";
       bubble.appendChild(author);
     }
 
@@ -938,6 +972,12 @@ function renderMessages() {
       const pin = document.createElement("span");
       pin.textContent = "📌";
       footer.appendChild(pin);
+    }
+
+    if (message.edited_at) {
+      const edited = document.createElement("span");
+      edited.textContent = "изменено";
+      footer.appendChild(edited);
     }
 
     const time = document.createElement("span");
@@ -993,14 +1033,6 @@ function renderMessages() {
       actions.appendChild(deleteBtn);
     }
 
-    const pinBtn = document.createElement("button");
-    pinBtn.type = "button";
-    pinBtn.className = "icon-btn";
-    pinBtn.style.cssText = "width:28px;height:26px;font-size:12px";
-    pinBtn.title = message.is_pinned ? "Открепить" : "Закрепить";
-    pinBtn.textContent = "📌";
-    pinBtn.addEventListener("click", () => togglePin(message));
-    actions.appendChild(pinBtn);
 
     bubble.appendChild(actions);
     row.appendChild(bubble);
@@ -1008,6 +1040,25 @@ function renderMessages() {
   });
 
   if (shouldScroll) container.scrollTop = container.scrollHeight;
+}
+
+function addOrUpdateMessage(msg) {
+  if (!msg || msg.chat_id !== activeChat?.id) return;
+  const idx = messages.findIndex(m => m.id === msg.id);
+  if (msg.deleted_at) {
+    if (idx >= 0) messages.splice(idx, 1);
+  } else if (idx >= 0) {
+    messages[idx] = {...messages[idx], ...msg};
+  } else {
+    messages.push(msg);
+    messages.sort((a, b) => new Date(a.created_at) - new Date(b.created_at));
+  }
+  renderMessages();
+}
+
+function forceScrollDown() {
+  const c = $("messages");
+  c.scrollTop = c.scrollHeight;
 }
 
 function setReply(message) {
@@ -1039,13 +1090,14 @@ async function sendMessage() {
   };
 
   try {
-    const {error} = await sb.from("messages").insert(row);
+    const {data: inserted, error} = await sb.from("messages").insert(row).select().single();
     if (error) throw error;
+    addOrUpdateMessage(inserted);
     input.value = "";
     input.style.height = "42px";
     replyToMessage = null;
     $("replyBar").classList.add("hidden");
-    await loadMessages();
+    forceScrollDown();
   } catch (error) {
     showNotice("Не удалось отправить сообщение: " + safeError(error), 6000);
   } finally {
@@ -1088,7 +1140,9 @@ async function editMessage(message) {
       .eq("id", message.id)
       .eq("sender_id", currentUser.id);
     if (error) throw error;
-    await loadMessages();
+    message.content = updated.trim();
+    message.edited_at = new Date().toISOString();
+    renderMessages();
     showNotice("Сообщение изменено.");
   } catch (error) {
     showNotice("Не удалось изменить сообщение: " + safeError(error), 6000);
@@ -1103,23 +1157,11 @@ async function deleteMessage(message) {
       .eq("id", message.id)
       .eq("sender_id", currentUser.id);
     if (error) throw error;
-    await loadMessages();
+    messages = messages.filter(m => m.id !== message.id);
+    renderMessages();
     showNotice("Сообщение удалено.");
   } catch (error) {
     showNotice("Не удалось удалить сообщение: " + safeError(error), 6000);
-  }
-}
-
-async function togglePin(message) {
-  try {
-    const {error} = await sb.from("messages")
-      .update({is_pinned:!message.is_pinned})
-      .eq("id", message.id);
-    if (error) throw error;
-    await loadMessages();
-    showNotice(message.is_pinned ? "Сообщение откреплено." : "Сообщение закреплено 📌");
-  } catch (error) {
-    showNotice("Не удалось закрепить сообщение: " + safeError(error), 6000);
   }
 }
 
@@ -1166,12 +1208,13 @@ $("fileInput").addEventListener("change", async event => {
       reply_to_id: replyToMessage?.id || null
     };
 
-    const {error: insertError} = await sb.from("messages").insert(row);
+    const {data: insertedFile, error: insertError} = await sb.from("messages").insert(row).select().single();
     if (insertError) throw insertError;
+    addOrUpdateMessage(insertedFile);
+    forceScrollDown();
 
     replyToMessage = null;
     $("replyBar").classList.add("hidden");
-    await loadMessages();
     showNotice("Файл отправлен ❤️");
   } catch (error) {
     showNotice("Не удалось отправить файл: " + safeError(error), 7000);
@@ -1200,9 +1243,17 @@ function subscribeToMessages() {
       schema:"public",
       table:"messages",
       filter:"chat_id=eq." + chatId
-    }, async payload => {
+    }, payload => {
       if (activeChat?.id !== chatId) return;
-      await loadMessages();
+      if (payload.eventType === "DELETE") {
+        messages = messages.filter(m => m.id !== payload.old.id);
+        renderMessages();
+        return;
+      }
+      addOrUpdateMessage(payload.new);
+      if (payload.eventType === "INSERT" && payload.new.sender_id !== currentUser?.id && document.visibilityState === "visible") {
+        markMessagesAsRead();
+      }
     })
     .subscribe(status => {
       if (status === "CHANNEL_ERROR") {
