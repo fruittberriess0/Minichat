@@ -828,6 +828,26 @@ async function loadMessages() {
     loadingMessages = false;
   }
 }
+async function togglePinMessage(message) {
+  if (!currentUser || !activeChat || !message) return;
+
+  const nextPinned = !message.is_pinned;
+
+  const { error } = await sb
+    .from("messages")
+    .update({ is_pinned: nextPinned })
+    .eq("id", message.id)
+    .eq("chat_id", activeChat.id);
+
+  if (error) {
+    console.error("Ошибка закрепления:", error.message);
+    showNotice("Не удалось изменить закрепление");
+    return;
+  }
+
+  await loadMessages();
+  showNotice(nextPinned ? "Сообщение закреплено 📌" : "Сообщение откреплено");
+}
 async function markMessagesAsRead() {
   if (!currentUser || !activeChat) return;
 
@@ -942,7 +962,16 @@ function renderMessages() {
     replyBtn.title = "Ответить";
     replyBtn.textContent = "↩";
     replyBtn.addEventListener("click", () => setReply(message));
-    actions.appendChild(replyBtn);
+        actions.appendChild(replyBtn);
+
+    const pinBtn = document.createElement("button");
+    pinBtn.type = "button";
+    pinBtn.className = "icon-btn";
+    pinBtn.style.cssText = "width:28px;height:26px;font-size:12px";
+    pinBtn.title = message.is_pinned ? "Открепить сообщение" : "Закрепить сообщение";
+    pinBtn.textContent = message.is_pinned ? "📍" : "📌";
+    pinBtn.addEventListener("click", () => togglePinMessage(message));
+    actions.appendChild(pinBtn);
 
     if (own) {
       const editBtn = document.createElement("button");
