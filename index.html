@@ -466,21 +466,41 @@ function initials(name) {
   return parts.slice(0, 2).map(s => s[0] || "").join("").toUpperCase() || "M";
 }
 
-function publicUrl(path) {
+/* Бакет приватный: файлы открываются по временным подписанным ссылкам */
+const urlCache = new Map();
+function cachedUrl(path) {
   if (!path) return "";
   if (/^https?:\/\//i.test(path)) return path;
-  return sb.storage.from(MEDIA_BUCKET).getPublicUrl(path).data.publicUrl;
+  const hit = urlCache.get(path);
+  return hit && hit.exp > Date.now() ? hit.url : "";
+}
+async function ensureUrl(path) {
+  const cached = cachedUrl(path);
+  if (cached) return cached;
+  const {data, error} = await sb.storage.from(MEDIA_BUCKET).createSignedUrl(path, 3600);
+  if (error || !data?.signedUrl) {
+    console.warn("Не удалось получить ссылку на файл:", error?.message);
+    return "";
+  }
+  urlCache.set(path, {url: data.signedUrl, exp: Date.now() + 50 * 60 * 1000});
+  return data.signedUrl;
 }
 
 function avatarMarkup(profile, fallbackName) {
-  const url = publicUrl(profile?.avatar_path || profile?.avatar_url);
+  const url = cachedUrl(profile?.avatar_path || profile?.avatar_url);
   return url
     ? `<img src="${escapeHtml(url)}" alt="" referrerpolicy="no-referrer">`
     : escapeHtml(initials(profile?.username || fallbackName));
 }
 
 function setAvatarElement(el, profile, fallbackName) {
+  const path = profile?.avatar_path || profile?.avatar_url;
   el.innerHTML = avatarMarkup(profile, fallbackName);
+  if (path && !cachedUrl(path)) {
+    ensureUrl(path).then(() => {
+      if (cachedUrl(path)) el.innerHTML = avatarMarkup(profile, fallbackName);
+    });
+  }
 }
 
 function formatTime(value) {
@@ -635,9 +655,14 @@ function updateProfileUI() {
   setAvatarElement($("miniAvatar"), currentProfile, name);
   $("profileUsername").value = currentProfile?.username || "";
   $("profileStatus").value = currentProfile?.status_text || "";
-  const url = publicUrl(currentProfile?.avatar_path || currentProfile?.avatar_url);
-  $("profileAvatar").src = url || "";
-  $("profileAvatar").style.visibility = url ? "visible" : "hidden";
+  const avatarPath = currentProfile?.avatar_path || currentProfile?.avatar_url;
+  const applyAvatar = () => {
+    const url = cachedUrl(avatarPath);
+    $("profileAvatar").src = url || "";
+    $("profileAvatar").style.visibility = url ? "visible" : "hidden";
+  };
+  applyAvatar();
+  if (avatarPath && !cachedUrl(avatarPath)) ensureUrl(avatarPath).then(applyAvatar);
 }
 
 function openProfile() {
@@ -704,9 +729,9 @@ $("avatarInput").addEventListener("change", async event => {
   showNotice("Загружаем аватар...");
   try {
     const ext = (file.name.split(".").pop() || "jpg").replace(/[^a-zA-Z0-9]/g, "");
-    const path = `avatars/${currentUser.id}/${Date.now()}.${ext}`;
+    const path = `${currentUser.id}/avatar/${Date.now()}.${ext}`;
     const {error: uploadError} = await sb.storage.from(MEDIA_BUCKET)
-      .upload(path, file, {upsert:true, contentType:file.type});
+      .upload(path, file, {upsert:false, contentType:file.type});
     if (uploadError) throw uploadError;
 
     const row = {
@@ -866,11 +891,7 @@ async function togglePinMessage(message) {
 
   const nextPinned = !message.is_pinned;
 
-  const { error } = await sb
-    .from("messages")
-    .update({ is_pinned: nextPinned })
-    .eq("id", message.id)
-    .eq("chat_id", activeChat.id);
+  const { error } = await sb.rpc("set_message_pinned", { p_msg: message.id, p_pinned: nextPinned });
 
   if (error) {
     console.error("Ошибка закрепления:", error.message);
@@ -885,12 +906,7 @@ async function togglePinMessage(message) {
 async function markMessagesAsRead() {
   if (!currentUser || !activeChat) return;
 
-  const { error } = await sb
-    .from("messages")
-    .update({ read_at: new Date().toISOString() })
-    .eq("chat_id", activeChat.id)
-    .neq("sender_id", currentUser.id)
-    .is("read_at", null);
+  const { error } = await sb.rpc("mark_chat_read", { p_chat: activeChat.id });
 
   if (error) {
     console.warn("Не удалось отметить сообщения прочитанными:", error.message);
@@ -932,25 +948,29 @@ function renderMessages() {
       bubble.appendChild(text);
     }
 
-    const fileUrl = message.file_url || message.image_url ||
-      (message.media_path ? publicUrl(message.media_path) : "");
-
-    if (fileUrl) {
+    const mediaPath = message.media_path || "";
+    if (mediaPath) {
+      const openMedia = async () => {
+        const u = await ensureUrl(mediaPath);
+        if (u) window.open(u, "_blank", "noopener");
+        else showNotice("Не удалось открыть файл.");
+      };
       if (message.message_type === "image" || (message.mime_type || "").startsWith("image/")) {
         const image = document.createElement("img");
         image.className = "message-image";
-        image.src = fileUrl;
         image.alt = message.file_name || "Изображение";
         image.loading = "lazy";
-        image.addEventListener("click", () => window.open(fileUrl, "_blank", "noopener"));
+        const first = cachedUrl(mediaPath);
+        if (first) image.src = first;
+        else ensureUrl(mediaPath).then(u => { if (u) image.src = u; });
+        image.addEventListener("click", openMedia);
         bubble.appendChild(image);
       } else {
         const link = document.createElement("a");
         link.className = "message-attachment";
-        link.href = fileUrl;
-        link.target = "_blank";
-        link.rel = "noopener noreferrer";
+        link.href = "#";
         link.textContent = "📎 " + (message.file_name || "Открыть файл");
+        link.addEventListener("click", e => { e.preventDefault(); openMedia(); });
         bubble.appendChild(link);
       }
     }
@@ -1186,13 +1206,12 @@ $("fileInput").addEventListener("change", async event => {
 
   try {
     const safeName = file.name.replace(/[^a-zA-Z0-9._-]/g, "_").slice(-100) || "file";
-    const path = `chats/${activeChat.id}/${currentUser.id}/${Date.now()}_${safeName}`;
+    const path = `${currentUser.id}/${activeChat.id}/${Date.now()}_${safeName}`;
 
     const {error: uploadError} = await sb.storage.from(MEDIA_BUCKET)
       .upload(path, file, {upsert:false, contentType:file.type || "application/octet-stream"});
     if (uploadError) throw uploadError;
 
-    const url = sb.storage.from(MEDIA_BUCKET).getPublicUrl(path).data.publicUrl;
     const isImage = file.type.startsWith("image/");
 
     const row = {
@@ -1203,8 +1222,8 @@ $("fileInput").addEventListener("change", async event => {
       media_path: path,
       file_name: file.name,
       mime_type: file.type || null,
-      image_url: isImage ? url : null,
-      file_url: url,
+      image_url: null,
+      file_url: null,
       reply_to_id: replyToMessage?.id || null
     };
 
