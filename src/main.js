@@ -1909,7 +1909,7 @@ function renderMessages() {
       if (replied) {
         const reply = document.createElement("div");
         reply.style.cssText = "border-left:2px solid #9ef2e1;padding-left:8px;margin-bottom:8px;font-size:11px;color:#c0d8d8";
-        reply.textContent = "↪ " + (replied.content || replied.file_name || "Сообщение");
+        reply.textContent = "↪ " + (replied.__plainContent ?? (isEncryptedText(replied.content) ? "🔒 Зашифрованное сообщение" : (replied.content || replied.file_name || "Сообщение")));
         reply.style.cursor = "pointer";
         reply.title = "Перейти к исходному сообщению";
         reply.addEventListener("click", () => jumpToMessage(replied.id));
@@ -2125,10 +2125,19 @@ async function forwardMessage(message) {
   const target = targets[Number(choice) - 1];
   if (!target) { showNotice("Номер чата не найден."); return; }
   try {
-    const row = {
+    let forwardContent = message.__plainContent ?? message.content ?? "";
+  if (isEncryptedText(forwardContent)) {
+    forwardContent = await decryptTextMessage(forwardContent,activeChat?.id);
+    if (forwardContent === null) {
+      showNotice("Для пересылки зашифрованного сообщения нужен правильный общий ключ.");
+      return;
+    }
+  }
+  const targetContent = await encryptTextMessage(forwardContent,target.id);
+  const row = {
       chat_id:target.id,
       sender_id:currentUser.id,
-      content:message.content || (message.file_name ? "Пересланный файл: " + message.file_name : "Пересланное сообщение"),
+      content:targetContent || (message.file_name ? "Пересланный файл: " + message.file_name : "Пересланное сообщение"),
       message_type:"text"
     };
     const {error} = await sb.from("messages").insert(row);
