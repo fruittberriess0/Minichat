@@ -32,3 +32,21 @@ test("new features have UI and backend integration hooks", () => {
     assert.ok(source.includes(marker), "Missing feature marker: " + marker);
   }
 });
+
+test("experimental end-to-end encryption is opt-in and uses Web Crypto", () => {
+  assert.match(html, /id="e2eeToggle"/);
+  assert.match(html, /не прошла независимый аудит/i);
+  for (const marker of [
+    "getE2EEIdentity",
+    "encryptTextForChat",
+    "decryptE2EEMessage",
+    "encrypted_payload",
+    "crypto.subtle.deriveBits",
+    "crypto.subtle.deriveKey",
+    "E2EE remains disabled until migration 004"
+  ]) {
+    assert.ok(source.includes(marker), "Missing E2EE safeguard/implementation marker: " + marker);
+  }
+  assert.match(source, /if \(pending\.__shouldEncrypt && !pending\.__payload\.encrypted_payload\)/);
+  assert.match(source, /Пересылка зашифрованного сообщения пока отключена/);
+});
