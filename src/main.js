@@ -22,7 +22,7 @@ import { escapeHtml, formatTime, initials, appendFormattedText } from "./utils/f
 import { initSharedSpace } from "./features/shared-space.js";
 const $ = id => document.getElementById(id);
 // Set this to the public half of your VAPID key pair after generating it.
-const WEB_PUSH_VAPID_PUBLIC_KEY = "";
+const WEB_PUSH_VAPID_PUBLIC_KEY = import.meta.env.VITE_WEB_PUSH_VAPID_PUBLIC_KEY || "";
 
 let currentUser = null;
 let currentProfile = null;
