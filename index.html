@@ -4,6 +4,11 @@
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
 <meta name="theme-color" content="#101b2b">
+<meta name="description" content="Личное пространство для переписки в MiniChat">
+<link rel="manifest" href="/manifest.webmanifest">
+<link rel="icon" href="/icons/icon.svg" type="image/svg+xml">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
 <title>MiniChat ❤️</title>
 <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2.45.0"></script>
 <style>
@@ -38,6 +43,11 @@
 html { color-scheme:dark; }
 html[data-theme="light"] { color-scheme:light; }
 body { transition:background .18s,color .18s; }
+.message-text { font-size:var(--message-font-size,16px); overflow-wrap:anywhere; }
+.message-link { color:var(--accent); text-decoration:underline; overflow-wrap:anywhere; }
+#messages.wallpaper-plain { background-image:none!important; }
+#messages.wallpaper-hearts { background-image:radial-gradient(ellipse at 20% 25%,#40d6bf12 0 2px,transparent 3px),radial-gradient(ellipse at 75% 65%,#ff718515 0 3px,transparent 4px)!important;background-size:50px 50px,65px 65px!important; }
+
 .message-row.message-highlight .message-bubble { outline:2px solid var(--accent); box-shadow:0 0 0 5px #40d6bf22; }
 .message-bubble { border:1px solid #ffffff08; }
 :root[data-theme="light"] .message-bubble { border-color:#dce5ed; }
@@ -259,6 +269,12 @@ label { display:block; font-size:13px; color:var(--muted); margin-top:17px; }
       <input class="field" id="password" type="password" autocomplete="current-password" placeholder="Ваш пароль" required>
       <button class="btn full" id="loginButton" type="submit">Войти</button>
       <button class="btn secondary full" id="registerButton" type="button">Создать аккаунт</button>
+      <button class="btn secondary full" id="magicLinkButton" type="button">Войти по ссылке на email</button>
+      <button class="btn secondary full" id="resetPasswordButton" type="button">Забыли пароль?</button>
+      <div style="display:flex;gap:8px;margin-top:8px">
+        <button class="btn secondary" id="googleLoginButton" type="button" style="flex:1">Google</button>
+        <button class="btn secondary" id="appleLoginButton" type="button" style="flex:1">Apple</button>
+      </div>
     </form>
     <div id="loginStatus" class="status-line" role="status"></div>
   </div>
@@ -357,6 +373,20 @@ label { display:block; font-size:13px; color:var(--muted); margin-top:17px; }
       <input class="field" id="profileUsername" maxlength="50" placeholder="Как тебя называть">
       <label for="profileStatus">Статус</label>
       <input class="field" id="profileStatus" maxlength="120" placeholder="Например: всегда на связи ❤️">
+      <div style="border-top:1px solid var(--line);margin:16px 0 10px"></div>
+      <label for="accentColorInput">Цвет акцента</label>
+      <input id="accentColorInput" type="color" value="#40d6bf" style="width:100%;height:38px;border:0;background:transparent">
+      <label for="fontSizeRange">Размер текста</label>
+      <input id="fontSizeRange" type="range" min="13" max="19" value="16" style="width:100%">
+      <label for="wallpaperSelect">Обои переписки</label>
+      <select id="wallpaperSelect" class="field">
+        <option value="dots">Точки</option><option value="plain">Однотонные</option><option value="hearts">Мягкий узор</option>
+      </select>
+      <label style="display:flex;align-items:center;gap:8px;margin-top:12px"><input id="soundToggle" type="checkbox" checked> Звук новых сообщений</label>
+      <label style="display:flex;align-items:center;gap:8px;margin-top:8px"><input id="muteChatToggle" type="checkbox"> Без звука в этом чате</label>
+      <label for="languageSelect">Язык</label>
+      <select id="languageSelect" class="field"><option value="ru">Русский</option><option value="en">English</option></select>
+      <button class="btn secondary full" id="enableNotificationsButton" type="button" style="margin-top:12px">Включить уведомления</button>
       <div class="profile-actions">
         <button class="btn" id="profileSaveButton" type="button">Сохранить</button>
         <button class="btn secondary" id="profileCancelButton" type="button">Закрыть</button>
@@ -392,6 +422,9 @@ let activeChat = null;
 let messages = [];
 let chatSummaries = {};
 let unreadWhileAway = 0;
+let soundEnabled = true;
+let currentLanguage = "ru";
+let isPasswordRecovery = new URLSearchParams(location.search).get("resetPassword") === "1";
 
 let presenceTimer = null;
 let presenceChannel = null;
@@ -540,12 +573,106 @@ function applyTheme(theme) {
   $("themeButton").title = next === "dark" ? "Включить светлую тему" : "Включить тёмную тему";
   try { localStorage.setItem("minichat-theme", next); } catch {}
 }
+function initPersonalization() {
+  try {
+    const accent = localStorage.getItem("minichat-accent");
+    const size = localStorage.getItem("minichat-font-size");
+    const wallpaper = localStorage.getItem("minichat-wallpaper") || "dots";
+    const language = localStorage.getItem("minichat-language") || "ru";
+    soundEnabled = localStorage.getItem("minichat-sound") !== "false";
+    if (accent && /^#[0-9a-f]{6}$/i.test(accent)) {
+      document.documentElement.style.setProperty("--accent", accent);
+      if ($("accentColorInput")) $("accentColorInput").value = accent;
+    }
+    if (size && Number(size) >= 13 && Number(size) <= 19) {
+      document.documentElement.style.setProperty("--message-font-size", size + "px");
+      if ($("fontSizeRange")) $("fontSizeRange").value = size;
+    }
+    if ($("wallpaperSelect")) $("wallpaperSelect").value = wallpaper;
+    if ($("languageSelect")) $("languageSelect").value = language;
+    currentLanguage = language;
+    if ($("soundToggle")) $("soundToggle").checked = soundEnabled;
+    applyLanguage();
+    applyWallpaper(wallpaper);
+  } catch (error) { console.debug("Personalization defaults used:", error?.message || error); }
+}
+function applyWallpaper(value) {
+  const box = $("messages");
+  if (!box) return;
+  box.classList.remove("wallpaper-plain","wallpaper-hearts");
+  if (value === "plain") box.classList.add("wallpaper-plain");
+  if (value === "hearts") box.classList.add("wallpaper-hearts");
+  try { localStorage.setItem("minichat-wallpaper", value); } catch {}
+}
+function applyLanguage() {
+  const english = currentLanguage === "en";
+  $("chatSearch").placeholder = english ? "Search chats..." : "Поиск чата...";
+  $("messageInput").placeholder = english ? "Write a message..." : "Напиши сообщение...";
+  $("profileUsername").placeholder = english ? "Display name" : "Как тебя называть";
+  $("profileStatus").placeholder = english ? "Your status" : "Например: всегда на связи ❤️";
+  $("enableNotificationsButton").textContent = english ? "Enable notifications" : "Включить уведомления";
+  $("themeButton").setAttribute("aria-label", english ? "Toggle theme" : "Переключить тему");
+  try { localStorage.setItem("minichat-language", currentLanguage); } catch {}
+}
+function playMessageSound() {
+  if (!soundEnabled || document.visibilityState !== "visible") return;
+  try {
+    const AudioContextClass = window.AudioContext || window.webkitAudioContext;
+    if (!AudioContextClass) return;
+    const context = new AudioContextClass();
+    const oscillator = context.createOscillator();
+    const gain = context.createGain();
+    oscillator.type = "sine";
+    oscillator.frequency.value = 880;
+    gain.gain.setValueAtTime(0.05, context.currentTime);
+    gain.gain.exponentialRampToValueAtTime(0.001, context.currentTime + 0.12);
+    oscillator.connect(gain); gain.connect(context.destination);
+    oscillator.start(); oscillator.stop(context.currentTime + 0.12);
+    oscillator.onended = () => context.close();
+  } catch {}
+}
 function initializeTheme() {
   let saved = "dark";
   try { saved = localStorage.getItem("minichat-theme") || "dark"; } catch {}
   applyTheme(saved);
 }
 initializeTheme();
+initPersonalization();
+$("accentColorInput").addEventListener("input", event => {
+  const value = event.target.value;
+  if (!/^#[0-9a-f]{6}$/i.test(value)) return;
+  document.documentElement.style.setProperty("--accent", value);
+  try { localStorage.setItem("minichat-accent", value); } catch {}
+});
+$("fontSizeRange").addEventListener("input", event => {
+  const value = String(Math.min(19, Math.max(13, Number(event.target.value) || 16)));
+  document.documentElement.style.setProperty("--message-font-size", value + "px");
+  try { localStorage.setItem("minichat-font-size", value); } catch {}
+});
+$("wallpaperSelect").addEventListener("change", event => applyWallpaper(event.target.value));
+$("languageSelect").addEventListener("change", event => { currentLanguage = event.target.value; applyLanguage(); });
+$("soundToggle").addEventListener("change", event => {
+  soundEnabled = event.target.checked;
+  try { localStorage.setItem("minichat-sound", String(soundEnabled)); } catch {}
+});
+$("muteChatToggle").addEventListener("change", async event => {
+  if (!activeChat || !currentUser) { event.target.checked = false; showNotice("Сначала открой чат."); return; }
+  try {
+    const {error} = await sb.from("chat_preferences").upsert({
+      user_id:currentUser.id, chat_id:activeChat.id, muted:event.target.checked
+    }, {onConflict:"user_id,chat_id"});
+    if (error) throw error;
+    showNotice(event.target.checked ? "Уведомления этого чата выключены." : "Уведомления этого чата включены.");
+  } catch (error) {
+    showNotice("Настройки чата требуют миграции Supabase: " + (error?.message || "ошибка"), 6000);
+  }
+});
+$("enableNotificationsButton").addEventListener("click", async () => {
+  if (!("Notification" in window)) { showNotice("Этот браузер не поддерживает уведомления."); return; }
+  const result = await Notification.requestPermission();
+  if (result === "granted") showNotice("Разрешение включено. Для push при закрытом сайте ещё нужны VAPID-ключи и серверная функция.");
+  else showNotice("Разрешение на уведомления не выдано.");
+});
 $("themeButton").addEventListener("click", () => {
   applyTheme(document.documentElement.dataset.theme === "light" ? "dark" : "light");
 });
