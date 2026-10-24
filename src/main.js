@@ -52,6 +52,9 @@ let galleryOverride = null;
 let galleryOverrideChatId = null;
 let appLockTimer = null;
 const APP_PIN_KEY = "minichat-local-pin-v1";
+let deviceSessionTimer = null;
+let deviceSessionTouching = false;
+const DEVICE_ID_KEY = "minichat-device-id";
 
 let presenceChannel = null;
 let onlineUserIds = new Set();
@@ -109,6 +112,7 @@ function startPresenceUpdates() {
 
 function handlePresenceVisibility() {
   if (document.visibilityState === "visible") {
+    touchDeviceSession();
     if (typeof markMessagesAsRead === "function") markMessagesAsRead();
     armAppLockTimer();
     if (presenceChannel && currentUser) {
@@ -677,6 +681,7 @@ async function initializeUser(user) {
   try {
     await loadProfile();
     await loadChats();
+    startDeviceSessionTracking();
     sb.rpc("purge_expired_messages").then(({error}) => {
       if (error) console.debug("Expiry cleanup is unavailable before the messaging migration:", error.message);
     });
@@ -716,6 +721,7 @@ sb.auth.onAuthStateChange((event, session) => {
     messages = [];
     removeRealtime();
     stopPresenceUpdates();
+    stopDeviceSessionTracking();
     setLoggedIn(false);
   }
 });
@@ -730,6 +736,135 @@ async function logout() {
   }
 }
 $("logoutButton").addEventListener("click", logout);
+function getDeviceId() {
+  try {
+    let id = localStorage.getItem(DEVICE_ID_KEY);
+    if (id && /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(id)) return id;
+    if (crypto.randomUUID) id = crypto.randomUUID();
+    else {
+      const bytes = crypto.getRandomValues(new Uint8Array(16));
+      bytes[6] = (bytes[6] & 0x0f) | 0x40;
+      bytes[8] = (bytes[8] & 0x3f) | 0x80;
+      const hex = [...bytes].map(value=>value.toString(16).padStart(2,"0")).join("");
+      id = hex.slice(0,8)+"-"+hex.slice(8,12)+"-"+hex.slice(12,16)+"-"+hex.slice(16,20)+"-"+hex.slice(20);
+    }
+    localStorage.setItem(DEVICE_ID_KEY,id);
+    return id;
+  } catch {
+    return null;
+  }
+}
+function getDeviceLabel() {
+  const ua = navigator.userAgent || "Browser";
+  const browser = /Edg\//.test(ua) ? "Edge" : /Firefox\//.test(ua) ? "Firefox" :
+    /Chrome\//.test(ua) ? "Chrome" : /Safari\//.test(ua) ? "Safari" : "Browser";
+  const os = /iPhone|iPad|iPod/.test(ua) ? "iOS" : /Android/.test(ua) ? "Android" :
+    /Mac OS X/.test(ua) ? "macOS" : /Windows/.test(ua) ? "Windows" : /Linux/.test(ua) ? "Linux" : "device";
+  return browser + " · " + os;
+}
+async function touchDeviceSession() {
+  if (!currentUser || deviceSessionTouching) return;
+  const deviceId = getDeviceId();
+  if (!deviceId) return;
+  deviceSessionTouching = true;
+  try {
+    const {data,error} = await sb.rpc("touch_device_session",{
+      p_device_id:deviceId,
+      p_device_label:getDeviceLabel()
+    });
+    if (error) {
+      console.debug("Device tracking requires migration 005:",error.message);
+      return;
+    }
+    if (data === false) {
+      localStorage.removeItem(DEVICE_ID_KEY);
+      stopDeviceSessionTracking();
+      showNotice("Эта сессия была завершена с другого устройства.");
+      await sb.auth.signOut({scope:"local"});
+    }
+  } catch (error) {
+    console.debug("Device session heartbeat unavailable:",error?.message || error);
+  } finally {
+    deviceSessionTouching = false;
+  }
+}
+function startDeviceSessionTracking() {
+  stopDeviceSessionTracking();
+  touchDeviceSession();
+  deviceSessionTimer = setInterval(touchDeviceSession,120000);
+}
+function stopDeviceSessionTracking() {
+  if (deviceSessionTimer) clearInterval(deviceSessionTimer);
+  deviceSessionTimer = null;
+}
+async function loadDeviceSessions() {
+  const list = $("deviceSessionsList");
+  const status = $("deviceSessionsStatus");
+  list.replaceChildren();
+  status.textContent = "Загружаем устройства…";
+  try {
+    const id = getDeviceId();
+    const {data,error} = await sb.rpc("list_user_devices",{p_current_device_id:id});
+    if (error) throw error;
+    const devices = data || [];
+    status.textContent = devices.length ? "Устройств: " + devices.length : "Активные устройства пока не зарегистрированы.";
+    devices.forEach(device => {
+      const row = document.createElement("article");
+      row.className = "device-session-item";
+      const copy = document.createElement("div");
+      copy.className = "device-session-copy";
+      const name = document.createElement("div");
+      name.className = "device-session-name";
+      name.textContent = device.device_label || "Browser";
+      const time = document.createElement("div");
+      time.className = "device-session-time";
+      time.textContent = "Последняя активность: " + formatLastSeen(device.last_seen);
+      copy.append(name,time);
+      if (device.is_current) {
+        const current = document.createElement("div");
+        current.className = "device-session-current";
+        current.textContent = "Это устройство";
+        copy.appendChild(current);
+      }
+      row.appendChild(copy);
+      if (!device.is_current) {
+        const revoke = document.createElement("button");
+        revoke.type = "button";
+        revoke.className = "btn secondary small-btn";
+        revoke.textContent = "Завершить";
+        revoke.addEventListener("click",async () => {
+          if (!confirm("Завершить сессию устройства «" + (device.device_label || "Browser") + "»? Оно выйдет при следующей проверке.")) return;
+          revoke.disabled = true;
+          try {
+            const {data,error} = await sb.rpc("revoke_user_device",{
+              p_device_id:device.device_id,p_current_device_id:getDeviceId()
+            });
+            if (error) throw error;
+            if (!data) throw new Error("Сессия уже завершена или не найдена.");
+            await loadDeviceSessions();
+          } catch (error) {
+            status.textContent = "Не удалось завершить сессию: " + safeError(error);
+            revoke.disabled = false;
+          }
+        });
+        row.appendChild(revoke);
+      }
+      list.appendChild(row);
+    });
+  } catch (error) {
+    status.textContent = "Для списка устройств нужна миграция 202610240005_device_sessions.sql: " + safeError(error);
+  }
+}
+$("viewSessionsButton").addEventListener("click",async () => {
+  $("profilePanel").classList.add("hidden");
+  $("deviceSessionsPanel").classList.remove("hidden");
+  await loadDeviceSessions();
+});
+$("deviceSessionsClose").addEventListener("click",() => $("deviceSessionsPanel").classList.add("hidden"));
+$("deviceSessionsPanel").addEventListener("click",event => {
+  if (event.target === $("deviceSessionsPanel")) $("deviceSessionsPanel").classList.add("hidden");
+});
+
 $("signOutAllButton").addEventListener("click", async () => {
   if (!confirm("Выйти из MiniChat на всех устройствах?")) return;
   const {error} = await sb.auth.signOut({scope:"global"});
