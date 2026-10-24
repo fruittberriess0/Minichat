@@ -305,3 +305,7 @@ label { display:block; font-size:13px; color:var(--muted); margin-top:17px; }
 .message-sticker-bubble { min-width:74px;padding:8px!important;background:transparent!important;border-color:transparent!important;box-shadow:none!important; }
 .message-sticker-bubble .message-text { font-size:58px;line-height:1.12;text-align:center; }
 .message-sticker-bubble .message-footer { justify-content:center; }
+
+.voice-waveform { display:flex;align-items:center;justify-content:space-between;gap:2px;height:32px;width:min(280px,100%);margin:7px 0 4px;padding:0 2px;cursor:pointer;touch-action:pan-y; }
+.voice-waveform-bar { display:block;flex:1;min-width:2px;max-width:5px;border-radius:3px;background:var(--muted);opacity:.75;transition:background .1s; }
+.voice-waveform-bar.played { background:var(--accent);opacity:1; }
