@@ -394,6 +394,7 @@ let unreadWhileAway = 0;
 
 let presenceTimer = null;
 let presenceChannel = null;
+let onlineUserIds = new Set();
 let lastSeenSaveTime = 0;
 
 function formatLastSeen(value) {
@@ -431,11 +432,35 @@ async function updateMyLastSeen() {
 
 function startPresenceUpdates() {
   if (presenceTimer) clearInterval(presenceTimer);
+  if (presenceChannel) {
+    sb.removeChannel(presenceChannel);
+    presenceChannel = null;
+  }
 
   updateMyLastSeen();
   presenceTimer = setInterval(updateMyLastSeen, 30000);
-
   document.addEventListener("visibilitychange", handlePresenceVisibility);
+
+  if (!currentUser) return;
+  presenceChannel = sb.channel("minichat-presence", {
+    config: { presence: { key: currentUser.id } }
+  });
+  presenceChannel
+    .on("presence", {event:"sync"}, () => {
+      const state = presenceChannel?.presenceState?.() || {};
+      onlineUserIds = new Set(Object.keys(state));
+      if (otherProfile) updateHeaderStatus();
+    })
+    .subscribe(async status => {
+      if (status === "SUBSCRIBED" && currentUser) {
+        const {error} = await presenceChannel.track({
+          user_id: currentUser.id,
+          online_at: new Date().toISOString(),
+          visible: document.visibilityState === "visible"
+        });
+        if (error) console.debug("Presence tracking unavailable:", error.message);
+      }
+    });
 }
 
 function handlePresenceVisibility() {
@@ -443,6 +468,19 @@ function handlePresenceVisibility() {
     if (typeof markMessagesAsRead === "function") markMessagesAsRead();
     lastSeenSaveTime = 0;
     updateMyLastSeen();
+    if (presenceChannel && currentUser) {
+      presenceChannel.track({
+        user_id: currentUser.id,
+        online_at: new Date().toISOString(),
+        visible: true
+      }).catch(error => console.debug("Presence update skipped:", error?.message || error));
+    }
+  } else if (presenceChannel && currentUser) {
+    presenceChannel.track({
+      user_id: currentUser.id,
+      online_at: new Date().toISOString(),
+      visible: false
+    }).catch(error => console.debug("Presence update skipped:", error?.message || error));
   }
 }
 
@@ -450,6 +488,11 @@ function stopPresenceUpdates() {
   if (presenceTimer) clearInterval(presenceTimer);
   presenceTimer = null;
   document.removeEventListener("visibilitychange", handlePresenceVisibility);
+  if (presenceChannel) {
+    sb.removeChannel(presenceChannel);
+    presenceChannel = null;
+  }
+  onlineUserIds = new Set();
 }
 
 let realtimeChannel = null;
@@ -590,7 +633,9 @@ function updateHeaderStatus() {
   if (!activeChat) return;
   if (otherProfile) {
     $("headerTitle").textContent = activeChat.title || otherProfile.username || chatTitle(activeChat);
-    $("headerStatus").textContent = formatLastSeen(otherProfile.last_seen);
+    $("headerStatus").textContent = onlineUserIds.has(otherProfile.id)
+      ? "В сети"
+      : formatLastSeen(otherProfile.last_seen);
     setAvatarElement($("headerAvatar"), otherProfile, otherProfile.username);
   }
 }
