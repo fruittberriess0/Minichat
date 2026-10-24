@@ -53,7 +53,6 @@ let galleryOverrideChatId = null;
 let appLockTimer = null;
 const APP_PIN_KEY = "minichat-local-pin-v1";
 
-let presenceTimer = null;
 let presenceChannel = null;
 let onlineUserIds = new Set();
 let realtimeReady = false;
@@ -84,11 +83,11 @@ function formatLastSeen(value) {
   });
 }
 
-async function updateMyLastSeen() {
+async function updateMyLastSeen(force = false) {
   if (!currentUser) return;
 
   const now = Date.now();
-  if (now - lastSeenSaveTime < 25000) return;
+  if (!force && now - lastSeenSaveTime < 25000) return;
   lastSeenSaveTime = now;
 
   const { error } = await sb
@@ -102,18 +101,15 @@ async function updateMyLastSeen() {
 }
 
 function startPresenceUpdates() {
-  if (presenceTimer) clearInterval(presenceTimer);
-  updateMyLastSeen();
-  // Presence is tracked only inside the active chat's member-authorized Realtime channel.
-  presenceTimer = setInterval(updateMyLastSeen, 300000);
+  // Realtime Presence carries the live online state; last_seen is only a low-frequency fallback.
+  // Write it once for this session, then when the tab is backgrounded or the user logs out.
+  updateMyLastSeen(true);
   document.addEventListener("visibilitychange", handlePresenceVisibility);
 }
 
 function handlePresenceVisibility() {
   if (document.visibilityState === "visible") {
     if (typeof markMessagesAsRead === "function") markMessagesAsRead();
-    lastSeenSaveTime = 0;
-    updateMyLastSeen();
     armAppLockTimer();
     if (presenceChannel && currentUser) {
       presenceChannel.track({
@@ -123,6 +119,7 @@ function handlePresenceVisibility() {
       }).catch(error => console.debug("Presence update skipped:", error?.message || error));
     }
   } else {
+    updateMyLastSeen(true);
     if (appLockTimer) clearTimeout(appLockTimer);
     appLockTimer = setTimeout(lockAppIfConfigured, 5 * 60 * 1000);
     if (presenceChannel && currentUser) {
@@ -136,8 +133,6 @@ function handlePresenceVisibility() {
 }
 
 function stopPresenceUpdates() {
-  if (presenceTimer) clearInterval(presenceTimer);
-  presenceTimer = null;
   document.removeEventListener("visibilitychange", handlePresenceVisibility);
   if (presenceChannel) {
     sb.removeChannel(presenceChannel);
@@ -726,6 +721,7 @@ sb.auth.onAuthStateChange((event, session) => {
 });
 
 async function logout() {
+  await updateMyLastSeen(true);
   const {error} = await sb.auth.signOut();
   if (error) showNotice("Не удалось выйти: " + safeError(error));
   else {
