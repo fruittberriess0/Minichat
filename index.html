@@ -447,6 +447,9 @@ let noticeTimer = null;
 let replyToMessage = null;
 let sending = false;
 let loadingMessages = false;
+let loadingOlderMessages = false;
+let hasMoreMessages = false;
+const MESSAGE_PAGE_SIZE = 50;
 let lastRenderedChatId = null;
 let profilesById = {};
 let otherProfile = null;
@@ -1008,22 +1011,26 @@ async function openChat(chat) {
 }
 
 async function loadMessages() {
-  if (!activeChat) return;
-  if (loadingMessages) return;
+  if (!activeChat || loadingMessages) return;
   loadingMessages = true;
+  const chatId = activeChat.id;
 
   try {
     const {data, error} = await sb.from("messages")
       .select("*")
-      .eq("chat_id", activeChat.id)
+      .eq("chat_id", chatId)
       .is("deleted_at", null)
-      .order("created_at", {ascending:true})
-      .limit(500);
+      .order("created_at", {ascending:false})
+      .limit(MESSAGE_PAGE_SIZE + 1);
 
     if (error) throw error;
-    messages = data || [];
-    lastRenderedChatId = activeChat.id;
+    if (activeChat?.id !== chatId) return;
+    const newestFirst = data || [];
+    hasMoreMessages = newestFirst.length > MESSAGE_PAGE_SIZE;
+    messages = newestFirst.slice(0, MESSAGE_PAGE_SIZE).reverse();
+    lastRenderedChatId = chatId;
     renderMessages();
+    forceScrollDown();
   } catch (error) {
     $("messages").innerHTML = '<div class="empty-chat">Не удалось загрузить сообщения.<br>' +
       escapeHtml(safeError(error)) + '</div>';
@@ -1031,6 +1038,42 @@ async function loadMessages() {
     loadingMessages = false;
   }
 }
+
+async function loadOlderMessages() {
+  if (!activeChat || loadingOlderMessages || !hasMoreMessages || !messages.length) return;
+  loadingOlderMessages = true;
+  const chatId = activeChat.id;
+  const firstMessage = messages[0];
+  const container = $("messages");
+  const oldHeight = container.scrollHeight;
+  const oldTop = container.scrollTop;
+  try {
+    const {data, error} = await sb.from("messages")
+      .select("*")
+      .eq("chat_id", chatId)
+      .is("deleted_at", null)
+      .lt("created_at", firstMessage.created_at)
+      .order("created_at", {ascending:false})
+      .limit(MESSAGE_PAGE_SIZE + 1);
+    if (error) throw error;
+    if (activeChat?.id !== chatId) return;
+    const newestFirst = data || [];
+    hasMoreMessages = newestFirst.length > MESSAGE_PAGE_SIZE;
+    const older = newestFirst.slice(0, MESSAGE_PAGE_SIZE).reverse();
+    if (!older.length) { hasMoreMessages = false; return; }
+    const known = new Set(messages.map(message => message.id));
+    messages = [...older.filter(message => !known.has(message.id)), ...messages];
+    renderMessages();
+    container.scrollTop = oldTop + (container.scrollHeight - oldHeight);
+  } catch (error) {
+    showNotice("Не удалось загрузить старые сообщения: " + safeError(error), 5000);
+  } finally {
+    loadingOlderMessages = false;
+  }
+}
+$("messages").addEventListener("scroll", () => {
+  if ($("messages").scrollTop < 70) loadOlderMessages();
+});
 async function togglePinMessage(message) {
   if (!currentUser || !activeChat || !message) return;
 
@@ -1091,7 +1134,28 @@ function renderMessages() {
     return;
   }
 
+  let previousDayKey = "";
   visibleMessages.forEach(message => {
+    const messageDate = new Date(message.created_at);
+    const dayKey = messageDate.getFullYear() + "-" + messageDate.getMonth() + "-" + messageDate.getDate();
+    if (dayKey !== previousDayKey) {
+      previousDayKey = dayKey;
+      const today = new Date();
+      const yesterday = new Date();
+      yesterday.setDate(today.getDate() - 1);
+      const sameDay = (a,b) => a.getFullYear() === b.getFullYear() && a.getMonth() === b.getMonth() && a.getDate() === b.getDate();
+      const label = sameDay(messageDate, today) ? "Сегодня" :
+        sameDay(messageDate, yesterday) ? "Вчера" :
+        messageDate.toLocaleDateString("ru-RU", {day:"numeric",month:"long",year:messageDate.getFullYear() === today.getFullYear() ? undefined : "numeric"});
+      const divider = document.createElement("div");
+      divider.className = "message-day-divider";
+      divider.style.cssText = "display:flex;justify-content:center;position:sticky;top:8px;z-index:2;margin:12px 0;pointer-events:none";
+      const pill = document.createElement("span");
+      pill.textContent = label;
+      pill.style.cssText = "font-size:11px;padding:5px 11px;border:1px solid var(--line);border-radius:99px;background:var(--panel);color:var(--muted);box-shadow:0 2px 8px #0001";
+      divider.appendChild(pill);
+      container.appendChild(divider);
+    }
     const own = message.sender_id === currentUser?.id;
     const row = document.createElement("div");
     row.className = "message-row " + (own ? "own" : "other");
