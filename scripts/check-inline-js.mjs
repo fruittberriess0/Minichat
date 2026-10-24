@@ -10,7 +10,7 @@ const scripts = [...html.matchAll(/<script\b([^>]*)>([\s\S]*?)<\/script>/gi)]
   .map(match => match[2])
   .filter(source => source.trim());
 if (scripts.length) throw new Error("Move inline JavaScript into modules.");
-for (const file of ["src/main.js", "src/supabase.js", "public/sw.js", "vite.config.js"]) {
+for (const file of ["src/main.js", "src/supabase.js", "src/features/shared-space.js", "src/utils/format.js", "public/sw.js", "vite.config.js"]) {
   const result = spawnSync(process.execPath, ["--check", resolve(root, file)], {encoding:"utf8"});
   if (result.status !== 0) {
     process.stderr.write(result.stderr || result.stdout || ("Syntax check failed: " + file));
