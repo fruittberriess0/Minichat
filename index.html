@@ -444,6 +444,8 @@ function stopPresenceUpdates() {
 
 let realtimeChannel = null;
 let noticeTimer = null;
+let typingTimer = null;
+let lastTypingBroadcastAt = 0;
 let replyToMessage = null;
 let sending = false;
 let loadingMessages = false;
@@ -1428,6 +1430,7 @@ $("messageInput").addEventListener("input", () => {
   input.style.height = "42px";
   input.style.height = Math.min(input.scrollHeight, 140) + "px";
   saveCurrentDraft();
+  if (input.value.trim()) broadcastTyping();
 });
 
 /* Редактирование, удаление и закрепление */
@@ -1535,10 +1538,23 @@ $("fileInput").addEventListener("change", async event => {
 
 /* Обновление сообщений в реальном времени */
 function removeRealtime() {
+  if (typingTimer) clearTimeout(typingTimer);
+  typingTimer = null;
   if (realtimeChannel) {
     sb.removeChannel(realtimeChannel);
     realtimeChannel = null;
   }
+}
+function broadcastTyping() {
+  if (!realtimeChannel || !currentUser || !activeChat) return;
+  const now = Date.now();
+  if (now - lastTypingBroadcastAt < 1200) return;
+  lastTypingBroadcastAt = now;
+  realtimeChannel.send({
+    type:"broadcast",
+    event:"typing",
+    payload:{user_id:currentUser.id, typing:true}
+  }).catch(error => console.debug("Typing broadcast skipped:", error?.message || error));
 }
 
 function subscribeToMessages() {
@@ -1547,6 +1563,17 @@ function subscribeToMessages() {
 
   const chatId = activeChat.id;
   realtimeChannel = sb.channel("messages-" + chatId + "-" + Date.now())
+    .on("broadcast", {event:"typing"}, ({payload}) => {
+      if (activeChat?.id !== chatId || payload?.user_id === currentUser?.id) return;
+      if (payload?.typing) {
+        $("headerStatus").textContent = "печатает…";
+        if (typingTimer) clearTimeout(typingTimer);
+        typingTimer = setTimeout(() => {
+          typingTimer = null;
+          updateHeaderStatus();
+        }, 2200);
+      }
+    })
     .on("postgres_changes", {
       event:"*",
       schema:"public",
