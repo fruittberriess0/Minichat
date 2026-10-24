@@ -178,6 +178,7 @@
       <select id="languageSelect" class="field"><option value="ru">Русский</option><option value="en">English</option></select>
       <button class="btn secondary full" id="enableNotificationsButton" type="button" style="margin-top:12px">Включить уведомления</button>
       <button class="btn secondary full" id="setPinButton" type="button" style="margin-top:8px">Настроить PIN-код приложения</button>
+      <button class="btn secondary full" id="viewSessionsButton" type="button" style="margin-top:8px">Активные устройства</button>
       <button class="btn secondary full" id="signOutAllButton" type="button" style="margin-top:8px">Выйти на всех устройствах</button>
       <div class="small muted" style="margin-top:7px">PIN — локальная блокировка экрана, не замена пароля аккаунта или E2EE.</div>
       <div class="profile-actions">
@@ -188,6 +189,16 @@
   </main>
 </div>
 
+<section id="deviceSessionsPanel" class="shared-space-panel hidden" role="dialog" aria-modal="true" aria-labelledby="deviceSessionsTitle">
+  <div class="shared-space-card">
+    <header class="shared-space-header">
+      <div><h2 id="deviceSessionsTitle">Активные устройства</h2><p class="muted">Отозванные устройства выйдут при следующей проверке соединения.</p></div>
+      <button id="deviceSessionsClose" class="icon-btn" type="button" aria-label="Закрыть">×</button>
+    </header>
+    <div id="deviceSessionsStatus" class="status-line" role="status"></div>
+    <div id="deviceSessionsList" class="device-sessions-list"></div>
+  </div>
+</section>
 <section id="callPanel" class="call-panel hidden" role="dialog" aria-modal="true" aria-labelledby="callTitle">
   <div class="call-card">
     <h2 id="callTitle">Звонок MiniChat</h2>
