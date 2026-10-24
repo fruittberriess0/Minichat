@@ -407,7 +407,7 @@ function exportCurrentChat() {
     const name = profilesById[message.sender_id]?.username ||
       (message.sender_id === currentUser?.id ? currentProfile?.username : "Собеседник") ||
       (message.sender_id === currentUser?.id ? "Я" : "Собеседник");
-    const body = message.content || (message.file_name ? "[Файл: " + message.file_name + "]" : "[Вложение]");
+    const body = visibleMessageText(message) || (message.file_name ? "[Файл: " + message.file_name + "]" : "[Вложение]");
     return "[" + date + "] " + name + ": " + body;
   });
   const blob = new Blob(["MiniChat — " + chatTitle(activeChat) + "\n\n" + lines.join("\n")], {type:"text/plain;charset=utf-8"});
@@ -721,6 +721,8 @@ sb.auth.onAuthStateChange((event, session) => {
   if (event === "SIGNED_OUT") {
     currentUser = null;
     currentProfile = null;
+    e2eeIdentityPromise = null;
+    e2eeIdentityCacheKey = null;
     chats = [];
     activeChat = null;
     messages = [];
@@ -1407,11 +1409,13 @@ function visibleMessageText(message) {
 async function loadChatPreference(chatId) {
   currentChatMuted = false;
   currentExpirySeconds = 0;
+  currentChatE2ee = false;
   $("muteChatToggle").checked = false;
   $("messageExpirySelect").value = "0";
+  $("e2eeToggle").checked = false;
   if (!currentUser || !chatId) return;
   try {
-    const {data, error} = await sb.from("chat_preferences").select("muted,wallpaper,message_expiry_seconds")
+    const {data,error} = await sb.from("chat_preferences").select("muted,wallpaper,message_expiry_seconds")
       .eq("user_id",currentUser.id).eq("chat_id",chatId).maybeSingle();
     if (error) throw error;
     currentChatMuted = Boolean(data?.muted);
@@ -1420,10 +1424,23 @@ async function loadChatPreference(chatId) {
       $("wallpaperSelect").value = data.wallpaper;
       applyWallpaper(data.wallpaper);
     }
-    currentExpirySeconds = Math.max(0, Number(data?.message_expiry_seconds) || 0);
+    currentExpirySeconds = Math.max(0,Number(data?.message_expiry_seconds) || 0);
     $("messageExpirySelect").value = String(currentExpirySeconds);
   } catch (error) {
-    console.debug("Per-chat settings need the optional migration:", error?.message || error);
+    console.debug("Per-chat settings need the messaging migration:",error?.message || error);
+  }
+  try {
+    const {data,error} = await sb.from("chat_preferences").select("e2ee_enabled")
+      .eq("user_id",currentUser.id).eq("chat_id",chatId).maybeSingle();
+    if (error) throw error;
+    e2eeSchemaAvailable = true;
+    currentChatE2ee = Boolean(data?.e2ee_enabled);
+    $("e2eeToggle").checked = currentChatE2ee;
+  } catch (error) {
+    e2eeSchemaAvailable = false;
+    currentChatE2ee = false;
+    $("e2eeToggle").checked = false;
+    console.debug("E2EE remains disabled until migration 004 is applied:",error?.message || error);
   }
 }
 
@@ -1433,12 +1450,41 @@ async function saveChatPreferences() {
     user_id:currentUser.id, chat_id:activeChat.id, muted:currentChatMuted,
     wallpaper:$("wallpaperSelect").value || "dots",
     message_expiry_seconds:Math.max(0, Number($("messageExpirySelect").value) || 0),
+    ...(e2eeSchemaAvailable ? {e2ee_enabled:Boolean(currentChatE2ee)} : {}),
     updated_at:new Date().toISOString()
   };
   const {error} = await sb.from("chat_preferences").upsert(row,{onConflict:"user_id,chat_id"});
   if (error) throw error;
 }
 
+$("e2eeToggle").addEventListener("change",async event => {
+  if (!currentUser || !activeChat) {
+    event.target.checked = false;
+    showNotice("Сначала открой чат.");
+    return;
+  }
+  const requested = event.target.checked;
+  const previous = currentChatE2ee;
+  event.target.disabled = true;
+  try {
+    const {error:probeError} = await sb.from("chat_preferences").select("e2ee_enabled")
+      .eq("user_id",currentUser.id).eq("chat_id",activeChat.id).limit(1);
+    if (probeError) throw new Error("Сначала примени миграцию 004_e2ee_text_messages в Supabase");
+    e2eeSchemaAvailable = true;
+    if (requested) await getE2EEIdentity();
+    currentChatE2ee = requested;
+    await saveChatPreferences();
+    showNotice(requested
+      ? "E2EE включено для новых текстовых сообщений. Каждый участник должен один раз включить его на своём устройстве."
+      : "E2EE выключено для новых сообщений. Ранее зашифрованные сообщения останутся зашифрованными.");
+  } catch (error) {
+    currentChatE2ee = previous;
+    event.target.checked = previous;
+    showNotice("Не удалось изменить E2EE: "+safeError(error),7000);
+  } finally { event.target.disabled = false; }
+});
+
+/* Открытие чата и сообщения */
 async function openChat(chat) {
   activeChat = chat;
   galleryOverride = null;
@@ -1613,7 +1659,7 @@ function renderMessages() {
   const visibleMessages = messageSearchTerm
     ? unexpiredMessages.filter(message => {
         const author = profilesById[message.sender_id]?.username || "";
-        const text = [message.content, message.file_name, author].join(" ").toLocaleLowerCase("ru");
+        const text = [visibleMessageText(message), message.file_name, author].join(" ").toLocaleLowerCase("ru");
         return text.includes(messageSearchTerm);
       })
     : unexpiredMessages;
@@ -1697,8 +1743,9 @@ function renderMessages() {
       bubble.appendChild(author);
     }
 
-    if (message.content) {
-      if (own && editingMessageId === message.id) {
+    const clearText = visibleMessageText(message);
+    if (clearText) {
+      if (own && editingMessageId === message.id && !message.encrypted_payload) {
         const editor = document.createElement("textarea");
         editor.className = "field";
         editor.value = editingDraft;
@@ -1740,9 +1787,9 @@ function renderMessages() {
       } else {
         const text = document.createElement("div");
         text.className = "message-text";
-        appendFormattedText(text, message.content);
+        appendFormattedText(text, clearText);
         bubble.appendChild(text);
-        appendLinkPreview(bubble, message.content);
+        if (!message.encrypted_payload) appendLinkPreview(bubble, clearText);
       }
     }
 
@@ -2063,6 +2110,10 @@ async function toggleReaction(message, reaction) {
 }
 
 async function forwardMessage(message) {
+  if (message?.encrypted_payload) {
+    showNotice("Пересылка зашифрованного сообщения пока отключена: оно не должно попадать в другой чат открытым текстом.");
+    return;
+  }
   if (!currentUser || !message || chats.length < 2) {
     showNotice("Для пересылки нужен другой доступный чат.");
     return;
@@ -2134,7 +2185,7 @@ $("messages").addEventListener("scroll", () => {
 
 function setReply(message) {
   replyToMessage = message;
-  $("replyPreview").textContent = message.content || message.file_name || "Вложение";
+  $("replyPreview").textContent = visibleMessageText(message) || message.file_name || "Вложение";
   $("replyBar").classList.remove("hidden");
   $("messageInput").focus();
 }
@@ -2150,6 +2201,11 @@ async function persistPendingMessage(pending) {
   pending.__error = "";
   renderMessages();
   try {
+    if (pending.__shouldEncrypt && !pending.__payload.encrypted_payload) {
+      const clearText = pending.__decryptedContent ?? pending.content ?? "";
+      const encrypted_payload = await encryptTextForChat(clearText,pending.chat_id);
+      pending.__payload = {...pending.__payload,content:E2EE_LOCK_TEXT,encrypted_payload};
+    }
     const {data: inserted, error} = await sb.from("messages").insert(pending.__payload).select().single();
     if (error) throw error;
     messages = messages.filter(item => item.id !== pending.id);
@@ -2198,6 +2254,8 @@ async function sendMessage() {
     ...(row.expires_at ? {expires_at:row.expires_at} : {}),
     created_at:new Date().toISOString(),
     __pending:true,
+    __shouldEncrypt:Boolean(currentChatE2ee),
+    __decryptedContent:content,
     __payload:row
   };
 
@@ -2261,6 +2319,10 @@ $("messageInput").addEventListener("input", () => {
 
 /* Редактирование, удаление и закрепление */
 function editMessage(message) {
+  if (message.encrypted_payload) {
+    showNotice("Редактирование зашифрованных сообщений пока не поддерживается.");
+    return;
+  }
   if (!message.content || message.__pending || message.__failed) {
     showNotice("Это сообщение пока нельзя редактировать.");
     return;
