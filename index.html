@@ -144,6 +144,7 @@
           <progress id="uploadProgress" max="100" style="width:100%;height:5px"></progress>
         </div>
         <div id="recordingStatus" class="small muted hidden" role="status" style="padding:6px 4px 0">Запись голосового сообщения… нажми 🎙 ещё раз для отправки</div>
+        <div class="small muted" id="e2eeStatus" style="padding:5px 5px 0" aria-live="polite"></div>
         <div class="small muted" style="padding:7px 5px 0">Enter — отправить · Shift + Enter — новая строка · Ctrl/⌘ + K — поиск</div>
       </div>
     </section>
@@ -179,6 +180,8 @@
       <label for="languageSelect">Язык</label>
       <select id="languageSelect" class="field"><option value="ru">Русский</option><option value="en">English</option></select>
       <button class="btn secondary full" id="enableNotificationsButton" type="button" style="margin-top:12px">Включить уведомления</button>
+      <button class="btn secondary full" id="e2eeToggleButton" type="button" style="margin-top:8px">Настроить общий ключ шифрования</button>
+      <div class="small muted" id="e2eeSettingsHint" style="margin-top:6px">Экспериментальное шифрование новых текстовых сообщений. Общий ключ передавайте вне MiniChat.</div>
       <button class="btn secondary full" id="setPinButton" type="button" style="margin-top:8px">Настроить PIN-код приложения</button>
       <button class="btn secondary full" id="viewSessionsButton" type="button" style="margin-top:8px">Активные устройства</button>
       <button class="btn secondary full" id="signOutAllButton" type="button" style="margin-top:8px">Выйти на всех устройствах</button>
