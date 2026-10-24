@@ -35,6 +35,11 @@ let soundEnabled = true;
 let currentLanguage = "ru";
 let currentChatMuted = false;
 let currentExpirySeconds = 0;
+let currentChatE2ee = false;
+let e2eeSchemaAvailable = false;
+let e2eeIdentityPromise = null;
+let e2eeIdentityCacheKey = null;
+const e2eeDecrypting = new Set();
 let isPasswordRecovery = new URLSearchParams(location.search).get("resetPassword") === "1";
 let selectionMode = false;
 let selectedMessageIds = new Set();
@@ -1181,6 +1186,222 @@ $("refreshButton").addEventListener("click", async () => {
     showNotice("Ошибка обновления: " + safeError(error));
   }
 });
+
+/* Experimental opt-in E2EE for new text messages only.
+   Existing messages, media, push metadata, and chat metadata remain unencrypted. */
+const E2EE_DB_NAME = "minichat-e2ee-v1";
+const E2EE_DB_VERSION = 1;
+const E2EE_DB_STORE = "identities";
+const E2EE_VERSION = 1;
+const E2EE_LOCK_TEXT = "🔒 Зашифрованное сообщение";
+const E2EE_ERROR_TEXT = "🔒 Не удалось расшифровать на этом устройстве";
+
+function openE2EEDatabase() {
+  if (!("indexedDB" in window)) return Promise.reject(new Error("IndexedDB недоступен в этом браузере"));
+  return new Promise((resolve,reject) => {
+    const request = indexedDB.open(E2EE_DB_NAME,E2EE_DB_VERSION);
+    request.onupgradeneeded = () => {
+      if (!request.result.objectStoreNames.contains(E2EE_DB_STORE)) {
+        request.result.createObjectStore(E2EE_DB_STORE,{keyPath:"id"});
+      }
+    };
+    request.onsuccess = () => resolve(request.result);
+    request.onerror = () => reject(request.error || new Error("Не удалось открыть локальное хранилище ключей"));
+    request.onblocked = () => reject(new Error("Закрой другие вкладки MiniChat и попробуй снова"));
+  });
+}
+async function readE2EEIdentityRecord(id) {
+  const db = await openE2EEDatabase();
+  try {
+    return await new Promise((resolve,reject) => {
+      const request = db.transaction(E2EE_DB_STORE,"readonly").objectStore(E2EE_DB_STORE).get(id);
+      request.onsuccess = () => resolve(request.result || null);
+      request.onerror = () => reject(request.error || new Error("Не удалось прочитать локальный ключ"));
+    });
+  } finally { db.close(); }
+}
+async function writeE2EEIdentityRecord(record) {
+  const db = await openE2EEDatabase();
+  try {
+    await new Promise((resolve,reject) => {
+      const transaction = db.transaction(E2EE_DB_STORE,"readwrite");
+      transaction.objectStore(E2EE_DB_STORE).put(record);
+      transaction.oncomplete = resolve;
+      transaction.onerror = () => reject(transaction.error || new Error("Не удалось сохранить локальный ключ"));
+      transaction.onabort = () => reject(transaction.error || new Error("Сохранение локального ключа отменено"));
+    });
+  } finally { db.close(); }
+}
+function bytesToBase64(bytes) {
+  let binary = "";
+  const array = bytes instanceof Uint8Array ? bytes : new Uint8Array(bytes);
+  for (let start=0; start<array.length; start+=0x8000) {
+    binary += String.fromCharCode(...array.subarray(start,Math.min(start+0x8000,array.length)));
+  }
+  return btoa(binary);
+}
+function base64ToBytes(value) {
+  return Uint8Array.from(atob(value),character=>character.charCodeAt(0));
+}
+function e2eeEndpoint(userId,deviceId) { return String(userId)+":"+String(deviceId); }
+function e2eePairInfo(endpointA,endpointB) {
+  return "minichat-e2ee-wrap-v1:"+[endpointA,endpointB].sort().join("|");
+}
+async function deriveE2EEWrappingKey(identity,peerPublicJwk,chatId,peerEndpoint,ownEndpoint) {
+  const peerPublicKey = await crypto.subtle.importKey(
+    "jwk",peerPublicJwk,{name:"ECDH",namedCurve:"P-256"},false,[]
+  );
+  const secret = await crypto.subtle.deriveBits({name:"ECDH",public:peerPublicKey},identity.privateKey,256);
+  const hkdfKey = await crypto.subtle.importKey("raw",secret,"HKDF",false,["deriveKey"]);
+  return crypto.subtle.deriveKey({
+    name:"HKDF",
+    hash:"SHA-256",
+    salt:new TextEncoder().encode("minichat-chat:"+chatId),
+    info:new TextEncoder().encode(e2eePairInfo(peerEndpoint,ownEndpoint))
+  },hkdfKey,{name:"AES-GCM",length:256},false,["encrypt","decrypt"]);
+}
+async function getE2EEIdentity() {
+  if (!currentUser) throw new Error("Сначала войди в MiniChat");
+  const deviceId = getDeviceId();
+  if (!deviceId) throw new Error("Не удалось определить это устройство");
+  const requestedCacheKey = currentUser.id+":"+deviceId;
+  if (e2eeIdentityPromise && e2eeIdentityCacheKey === requestedCacheKey) return e2eeIdentityPromise;
+  e2eeIdentityCacheKey = requestedCacheKey;
+  const userId = currentUser.id;
+  e2eeIdentityPromise = (async () => {
+    if (!window.crypto?.subtle) throw new Error("Web Crypto недоступен. Используй HTTPS в современном браузере");
+    const id = userId+":"+deviceId;
+    let record = await readE2EEIdentityRecord(id);
+    if (!record) {
+      const generated = await crypto.subtle.generateKey({name:"ECDH",namedCurve:"P-256"},true,["deriveBits"]);
+      const privateJwk = await crypto.subtle.exportKey("jwk",generated.privateKey);
+      const publicJwk = await crypto.subtle.exportKey("jwk",generated.publicKey);
+      const privateKey = await crypto.subtle.importKey("jwk",privateJwk,{name:"ECDH",namedCurve:"P-256"},false,["deriveBits"]);
+      record = {id,user_id:userId,device_id:deviceId,privateKey,publicKey:publicJwk,created_at:new Date().toISOString()};
+      await writeE2EEIdentityRecord(record);
+    }
+    if (!record.privateKey || !record.publicKey) throw new Error("Локальный ключ повреждён. Не удаляй данные браузера, если здесь есть нужные ключи");
+    const {error} = await sb.from("e2ee_devices").upsert({
+      user_id:userId,
+      device_id:deviceId,
+      public_key:record.publicKey,
+      last_seen_at:new Date().toISOString(),
+      revoked_at:null
+    },{onConflict:"user_id,device_id"});
+    if (error) throw error;
+    return record;
+  })();
+  try { return await e2eeIdentityPromise; }
+  catch (error) {
+    if (e2eeIdentityCacheKey === requestedCacheKey) {
+      e2eeIdentityPromise = null;
+      e2eeIdentityCacheKey = null;
+    }
+    throw error;
+  }
+}
+async function getChatE2EEDeviceDirectory(chatId) {
+  const {data:members,error:memberError} = await sb.from("chat_members").select("user_id").eq("chat_id",chatId);
+  if (memberError) throw memberError;
+  const memberIds = [...new Set((members || []).map(row=>row.user_id).filter(Boolean))];
+  if (!memberIds.length) throw new Error("Не удалось определить участников чата");
+  const {data:devices,error:deviceError} = await sb.from("e2ee_devices")
+    .select("user_id,device_id,public_key")
+    .in("user_id",memberIds)
+    .is("revoked_at",null);
+  if (deviceError) throw deviceError;
+  const activeDevices = devices || [];
+  const missing = memberIds.filter(userId=>!activeDevices.some(device=>device.user_id===userId));
+  if (missing.length) {
+    throw new Error("Каждый участник должен один раз включить E2EE на своём устройстве");
+  }
+  return {memberIds,devices:activeDevices};
+}
+async function encryptTextForChat(text,chatId) {
+  const identity = await getE2EEIdentity();
+  const directory = await getChatE2EEDeviceDirectory(chatId);
+  const ownEndpoint = e2eeEndpoint(currentUser.id,identity.device_id);
+  const senderEndpoint = ownEndpoint;
+  const contentKeyBytes = crypto.getRandomValues(new Uint8Array(32));
+  const contentKey = await crypto.subtle.importKey("raw",contentKeyBytes,{name:"AES-GCM"},false,["encrypt"]);
+  const contentIv = crypto.getRandomValues(new Uint8Array(12));
+  const ciphertext = await crypto.subtle.encrypt({
+    name:"AES-GCM",iv:contentIv,additionalData:new TextEncoder().encode("minichat-message-v1:"+chatId)
+  },contentKey,new TextEncoder().encode(String(text)));
+  const envelopes = {};
+  for (const device of directory.devices) {
+    const recipientEndpoint = e2eeEndpoint(device.user_id,device.device_id);
+    const wrappingKey = await deriveE2EEWrappingKey(identity,device.public_key,chatId,senderEndpoint,recipientEndpoint);
+    const iv = crypto.getRandomValues(new Uint8Array(12));
+    const wrappedKey = await crypto.subtle.encrypt({
+      name:"AES-GCM",
+      iv,
+      additionalData:new TextEncoder().encode("minichat-key-v1:"+chatId+":"+senderEndpoint+":"+recipientEndpoint)
+    },wrappingKey,contentKeyBytes);
+    envelopes[recipientEndpoint] = {iv:bytesToBase64(iv),wrapped_key:bytesToBase64(wrappedKey)};
+  }
+  return {
+    version:E2EE_VERSION,
+    algorithm:"ECDH-P256/HKDF-SHA256/AES-256-GCM",
+    sender_device_id:identity.device_id,
+    iv:bytesToBase64(contentIv),
+    ciphertext:bytesToBase64(ciphertext),
+    envelopes
+  };
+}
+async function decryptE2EEMessage(message) {
+  if (!message?.encrypted_payload || message.__decryptedContent !== undefined || e2eeDecrypting.has(message.id)) return;
+  e2eeDecrypting.add(message.id);
+  try {
+    const payload = message.encrypted_payload;
+    if (payload.version !== E2EE_VERSION || !payload.sender_device_id || !payload.envelopes) {
+      throw new Error("Неподдерживаемый формат зашифрованного сообщения");
+    }
+    const identity = await getE2EEIdentity();
+    const ownEndpoint = e2eeEndpoint(currentUser.id,identity.device_id);
+    const senderEndpoint = e2eeEndpoint(message.sender_id,payload.sender_device_id);
+    const envelope = payload.envelopes[ownEndpoint];
+    if (!envelope) throw new Error("На этом устройстве нет ключа для этого сообщения");
+    const {data:senderDevice,error:senderError} = await sb.from("e2ee_devices")
+      .select("public_key")
+      .eq("user_id",message.sender_id)
+      .eq("device_id",payload.sender_device_id)
+      .maybeSingle();
+    if (senderError) throw senderError;
+    if (!senderDevice?.public_key) throw new Error("Не найден открытый ключ устройства отправителя");
+    const wrappingKey = await deriveE2EEWrappingKey(identity,senderDevice.public_key,message.chat_id,senderEndpoint,ownEndpoint);
+    const contentKeyBytes = await crypto.subtle.decrypt({
+      name:"AES-GCM",
+      iv:base64ToBytes(envelope.iv),
+      additionalData:new TextEncoder().encode("minichat-key-v1:"+message.chat_id+":"+senderEndpoint+":"+ownEndpoint)
+    },wrappingKey,base64ToBytes(envelope.wrapped_key));
+    const contentKey = await crypto.subtle.importKey("raw",contentKeyBytes,{name:"AES-GCM"},false,["decrypt"]);
+    const clearBytes = await crypto.subtle.decrypt({
+      name:"AES-GCM",
+      iv:base64ToBytes(payload.iv),
+      additionalData:new TextEncoder().encode("minichat-message-v1:"+message.chat_id)
+    },contentKey,base64ToBytes(payload.ciphertext));
+    message.__decryptedContent = new TextDecoder().decode(clearBytes);
+  } catch (error) {
+    message.__decryptError = error?.message || "Расшифровка не удалась";
+    message.__decryptedContent = E2EE_ERROR_TEXT;
+    console.debug("E2EE decrypt failed:",message.__decryptError);
+  } finally {
+    e2eeDecrypting.delete(message.id);
+    if (activeChat?.id === message.chat_id && messages.some(item=>item.id===message.id)) renderMessages();
+  }
+}
+function visibleMessageText(message) {
+  if (!message) return "";
+  if (message.encrypted_payload) {
+    if (message.__decryptedContent === undefined) {
+      decryptE2EEMessage(message).catch(error=>console.debug("E2EE decrypt skipped:",error?.message || error));
+      return E2EE_LOCK_TEXT;
+    }
+    return message.__decryptedContent;
+  }
+  return message.content || "";
+}
 
 /* Открытие чата и сообщения */
 async function loadChatPreference(chatId) {
