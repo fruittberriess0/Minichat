@@ -23,6 +23,13 @@ let selectionMode = false;
 let selectedMessageIds = new Set();
 let editingMessageId = null;
 let editingDraft = "";
+let mediaRecorder = null;
+let recordedChunks = [];
+let recordStream = null;
+let videoRecorder = null;
+let videoChunks = [];
+let videoStream = null;
+let reactionsByMessage = {};
 let appLockTimer = null;
 const APP_PIN_KEY = "minichat-local-pin-v1";
 
@@ -329,6 +336,20 @@ function initializeEmojiPicker() {
 }
 initializeEmojiPicker();
 $("emojiButton").addEventListener("click", () => $("emojiPicker").classList.toggle("hidden"));
+function wrapComposerSelection(delimiter) {
+  const input = $("messageInput");
+  const value = input.value;
+  const start = input.selectionStart ?? value.length;
+  const end = input.selectionEnd ?? value.length;
+  const selected = value.slice(start,end) || (currentLanguage === "en" ? "text" : "текст");
+  input.setRangeText(delimiter + selected + delimiter,start,end,"select");
+  input.focus();
+  saveCurrentDraft();
+}
+$("formatToggleButton").addEventListener("click",() => $("formatToolbar").classList.toggle("hidden"));
+$("boldTextButton").addEventListener("click",() => wrapComposerSelection("**"));
+$("italicTextButton").addEventListener("click",() => wrapComposerSelection("*"));
+$("codeTextButton").addEventListener("click",() => wrapComposerSelection("`"));
 $("messageSearchToggle").addEventListener("click", () => {
   $("messageSearchBar").classList.toggle("hidden");
   if ($("messageSearchBar").classList.contains("hidden")) {
@@ -1347,8 +1368,8 @@ function renderMessages() {
         video.controls = true;
         video.preload = "metadata";
         video.playsInline = true;
-        video.className = "message-image";
-        video.style.maxHeight = "360px";
+        video.className = message.message_type === "video_note" ? "message-video-note" : "message-image";
+        video.style.maxHeight = message.message_type === "video_note" ? "260px" : "360px";
         video.setAttribute("aria-label", message.file_name || "Видеосообщение");
         const first = cachedUrl(mediaPath);
         if (first) video.src = first;
@@ -1848,7 +1869,7 @@ async function compressImage(file) {
   }
 }
 
-async function uploadOneFile(originalFile, chatId, replyId) {
+async function uploadOneFile(originalFile, chatId, replyId, forcedMessageType = null) {
   let file = await compressImage(originalFile);
   if (file.size > 25 * 1024 * 1024) throw new Error(file.name + ": файл больше 25 МБ");
   const safeName = file.name.replace(/[^a-zA-Z0-9._-]/g, "_").slice(-100) || "file";
@@ -1864,7 +1885,7 @@ async function uploadOneFile(originalFile, chatId, replyId) {
     chat_id:chatId,
     sender_id:currentUser.id,
     content:"",
-    message_type:isImage ? "image" : isAudio ? "audio" : isVideo ? "video" : "file",
+    message_type:forcedMessageType || (isImage ? "image" : isAudio ? "audio" : isVideo ? "video" : "file"),
     media_path:path,
     file_name:file.name,
     mime_type:file.type || null,
@@ -1878,7 +1899,7 @@ async function uploadOneFile(originalFile, chatId, replyId) {
   if (activeChat?.id === chatId) addOrUpdateMessage(insertedFile);
 }
 
-async function uploadFiles(files) {
+async function uploadFiles(files, forcedMessageType = null) {
   if (!currentUser || !activeChat || !files?.length) return;
   const targetChatId = activeChat.id;
   const replyId = replyToMessage?.id && !String(replyToMessage.id).startsWith("local-") ? replyToMessage.id : null;
@@ -1889,6 +1910,7 @@ async function uploadFiles(files) {
   }
   $("attachmentButton").disabled = true;
   $("recordButton").disabled = true;
+  $("videoNoteButton").disabled = true;
   $("uploadProgressWrap").classList.remove("hidden");
   $("uploadProgress").removeAttribute("value");
   let succeeded = 0;
@@ -1897,7 +1919,7 @@ async function uploadFiles(files) {
     for (let index = 0; index < fileList.length; index++) {
       $("uploadProgressLabel").textContent = "Загружаем " + (index + 1) + " из " + fileList.length + ": " + fileList[index].name;
       try {
-        await uploadOneFile(fileList[index], targetChatId, replyId);
+        await uploadOneFile(fileList[index], targetChatId, replyId, forcedMessageType);
         succeeded++;
       } catch (error) {
         failures.push(fileList[index].name + ": " + (error?.message || "ошибка"));
@@ -1914,6 +1936,7 @@ async function uploadFiles(files) {
   } finally {
     $("attachmentButton").disabled = false;
     $("recordButton").disabled = false;
+    $("videoNoteButton").disabled = false;
     $("uploadProgressWrap").classList.add("hidden");
     $("fileInput").value = "";
   }
@@ -1961,6 +1984,56 @@ async function toggleVoiceRecording() {
   }
 }
 $("recordButton").addEventListener("click", toggleVoiceRecording);
+
+async function toggleVideoNoteRecording() {
+  if (videoRecorder?.state === "recording") {
+    videoRecorder.stop();
+    return;
+  }
+  if (mediaRecorder?.state === "recording") {
+    showNotice("Сначала заверши аудиозапись.");
+    return;
+  }
+  if (!navigator.mediaDevices?.getUserMedia || typeof MediaRecorder === "undefined") {
+    showNotice("Запись видео не поддерживается этим браузером.");
+    return;
+  }
+  try {
+    videoStream = await navigator.mediaDevices.getUserMedia({
+      audio:true,
+      video:{facingMode:"user",width:{ideal:480},height:{ideal:480},frameRate:{ideal:24,max:30}}
+    });
+    videoChunks = [];
+    const preferred = ["video/webm;codecs=vp8,opus","video/webm","video/mp4"];
+    const supported = preferred.find(type => MediaRecorder.isTypeSupported?.(type));
+    videoRecorder = new MediaRecorder(videoStream, supported ? {mimeType:supported} : undefined);
+    videoRecorder.addEventListener("dataavailable", event => {
+      if (event.data?.size) videoChunks.push(event.data);
+    });
+    videoRecorder.addEventListener("stop", async () => {
+      const mime = videoRecorder?.mimeType || videoChunks[0]?.type || "video/webm";
+      const extension = mime.includes("mp4") ? "mp4" : "webm";
+      const file = new File(videoChunks,"video-note-"+Date.now()+"."+extension,{type:mime});
+      videoStream?.getTracks().forEach(track => track.stop());
+      videoStream = null;
+      videoRecorder = null;
+      $("recordingStatus").classList.add("hidden");
+      $("videoNoteButton").textContent = "📹";
+      if (file.size) await uploadFiles([file],"video_note");
+    });
+    videoRecorder.start();
+    $("recordingStatus").textContent = "Запись видео-кружка… нажми ■ ещё раз, чтобы отправить";
+    $("recordingStatus").classList.remove("hidden");
+    $("videoNoteButton").textContent = "■";
+    showNotice("Идёт запись видео-кружка. Нажми ■, чтобы отправить.");
+  } catch (error) {
+    videoStream?.getTracks().forEach(track => track.stop());
+    videoStream = null;
+    videoRecorder = null;
+    showNotice("Не удалось начать запись видео: " + safeError(error),6000);
+  }
+}
+$("videoNoteButton").addEventListener("click",toggleVideoNoteRecording);
 
 function handleDroppedFiles(event) {
   const files = event.dataTransfer?.files;
