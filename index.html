@@ -116,8 +116,10 @@
         </div>
         <div class="composer">
           <button class="icon-btn" id="emojiButton" type="button" title="Добавить эмодзи" aria-label="Добавить эмодзи">☺</button>
+          <button class="icon-btn" id="formatToggleButton" type="button" title="Форматирование" aria-label="Форматирование">Aa</button>
           <button class="icon-btn" id="attachmentButton" type="button" title="Прикрепить файлы">＋</button>
           <button class="icon-btn" id="recordButton" type="button" title="Записать голосовое сообщение" aria-label="Записать голосовое сообщение">🎙</button>
+          <button class="icon-btn" id="videoNoteButton" type="button" title="Записать видео-кружок" aria-label="Записать видео-кружок">📹</button>
           <input id="fileInput" type="file" multiple accept="image/*,.pdf,.doc,.docx,.txt,.zip,.mp3,.mp4,.webm,.ogg">
           <textarea id="messageInput" rows="1" placeholder="Напиши сообщение..." aria-label="Сообщение"></textarea>
           <select id="messageExpirySelect" class="field" title="Срок жизни сообщения" aria-label="Срок жизни сообщения" style="width:auto;max-width:94px;padding:6px 3px;font-size:11px;flex-shrink:0">
@@ -126,6 +128,11 @@
           <button class="icon-btn" id="sendButton" type="button" title="Отправить сообщение">➤</button>
         </div>
         <div id="emojiPicker" class="hidden" style="display:flex;flex-wrap:wrap;gap:5px;padding:8px 2px" aria-label="Выбор эмодзи"></div>
+        <div id="formatToolbar" class="format-toolbar hidden" aria-label="Форматирование сообщения">
+          <button class="btn secondary small-btn" id="boldTextButton" type="button" title="Жирный">**B**</button>
+          <button class="btn secondary small-btn" id="italicTextButton" type="button" title="Курсив">*I*</button>
+          <button class="btn secondary small-btn" id="codeTextButton" type="button" title="Моноширинный">\x60code\x60</button>
+        </div>
         <div id="uploadProgressWrap" class="hidden" style="padding:7px 4px 0">
           <div id="uploadProgressLabel" class="small muted" role="status">Подготовка файлов…</div>
           <progress id="uploadProgress" max="100" style="width:100%;height:5px"></progress>
