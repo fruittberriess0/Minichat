@@ -93,6 +93,8 @@
         </div>
         <button class="icon-btn" id="messageSearchToggle" type="button" title="Поиск по сообщениям" aria-label="Поиск по сообщениям">⌕</button>
         <button class="icon-btn" id="exportChatButton" type="button" title="Экспортировать переписку" aria-label="Экспортировать переписку">⇩</button>
+        <button class="icon-btn" id="sharedAlbumButton" type="button" title="Общий альбом" aria-label="Общий альбом">🖼</button>
+        <button class="icon-btn" id="sharedSpaceButton" type="button" title="Общие задачи, даты и опросы" aria-label="Общее пространство">♥+</button>
         <button class="icon-btn hidden" id="groupManageButton" type="button" title="Управление группой" aria-label="Управление группой">👥</button>
         <button class="icon-btn" id="chatStatsButton" type="button" title="Статистика чата" aria-label="Статистика чата">▥</button>
         <button class="icon-btn" id="selectMessagesButton" type="button" title="Выбрать сообщения" aria-label="Выбрать сообщения">☑</button>
@@ -184,6 +186,35 @@
   </main>
 </div>
 
+<section id="sharedSpacePanel" class="shared-space-panel hidden" role="dialog" aria-modal="true" aria-labelledby="sharedSpaceTitle">
+  <div class="shared-space-card">
+    <header class="shared-space-header">
+      <div><h2 id="sharedSpaceTitle">Наше пространство ❤️</h2><p class="muted">Задачи, события, даты и опросы</p></div>
+      <button id="sharedSpaceClose" class="icon-btn" type="button" aria-label="Закрыть">×</button>
+    </header>
+    <form id="sharedItemForm" class="shared-item-form">
+      <label for="sharedItemType">Что добавить?</label>
+      <select id="sharedItemType" class="field">
+        <option value="task">Задача</option>
+        <option value="event">Событие в календаре</option>
+        <option value="anniversary">Наша дата</option>
+        <option value="poll">Опрос</option>
+      </select>
+      <label for="sharedItemTitle">Название / вопрос</label>
+      <input id="sharedItemTitle" class="field" maxlength="120" required placeholder="Например: куда поедем в выходные?">
+      <label for="sharedItemBody">Описание или варианты опроса через запятую</label>
+      <textarea id="sharedItemBody" class="field" rows="2" maxlength="1200" placeholder="Добавь детали или варианты через запятую"></textarea>
+      <label for="sharedItemDue">Дата / срок (необязательно)</label>
+      <input id="sharedItemDue" class="field" type="date">
+      <div class="shared-item-actions">
+        <button class="btn" type="submit">Добавить</button>
+        <button class="btn secondary" id="shareLocationButton" type="button">📍 Поделиться местоположением</button>
+      </div>
+    </form>
+    <div id="sharedSpaceStatus" class="status-line" role="status"></div>
+    <div id="sharedSpaceList" class="shared-space-list"></div>
+  </div>
+</section>
 <div id="appLockScreen" class="app-lock-screen hidden" role="dialog" aria-modal="true" aria-labelledby="appLockTitle">
   <div class="app-lock-card">
     <div style="font-size:32px;text-align:center">🔒</div>
