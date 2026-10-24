@@ -177,6 +177,8 @@
       </select>
       <label style="display:flex;align-items:center;gap:8px;margin-top:12px"><input id="soundToggle" type="checkbox" checked> Звук новых сообщений</label>
       <label style="display:flex;align-items:center;gap:8px;margin-top:8px"><input id="muteChatToggle" type="checkbox"> Без звука в этом чате</label>
+      <label style="display:flex;align-items:center;gap:8px;margin-top:8px"><input id="e2eeToggle" type="checkbox"> Экспериментальное E2EE</label>
+      <div class="small muted" style="margin-top:5px;line-height:1.45">Шифрует только новые текстовые сообщения. Каждый участник должен включить E2EE на своём устройстве. Вложения, метаданные и старые сообщения не шифруются; функция не прошла независимый аудит.</div>
       <label for="languageSelect">Язык</label>
       <select id="languageSelect" class="field"><option value="ru">Русский</option><option value="en">English</option></select>
       <button class="btn secondary full" id="enableNotificationsButton" type="button" style="margin-top:12px">Включить уведомления</button>
