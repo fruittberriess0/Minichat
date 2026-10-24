@@ -141,6 +141,13 @@ label { display:block; font-size:13px; color:var(--muted); margin-top:17px; }
 .chat-item-copy { flex:1; min-width:0; }
 .chat-item-title { font-size:14px; font-weight:750; overflow:hidden;text-overflow:ellipsis;white-space:nowrap; }
 .chat-item-preview { color:var(--muted); font-size:12px; margin-top:5px; overflow:hidden;text-overflow:ellipsis;white-space:nowrap; }
+.chat-item-side { display:flex; flex-direction:column; align-items:flex-end; gap:7px; flex-shrink:0; min-width:28px; }
+.chat-item-time { color:var(--muted); font-size:10px; white-space:nowrap; }
+.chat-unread { min-width:19px; height:19px; padding:0 5px; border-radius:10px; display:grid; place-items:center; background:var(--accent); color:#062b2b; font-size:10px; font-weight:850; }
+.chat-unread.hidden { display:none!important; }
+#scrollToBottomButton { position:absolute; right:18px; bottom:102px; z-index:5; border:1px solid var(--line); border-radius:24px; padding:10px 13px; background:var(--panel); color:var(--text); box-shadow:0 5px 20px #0003; font-size:12px; font-weight:750; }
+#scrollToBottomButton .scroll-unread { display:inline-grid; place-items:center; margin-left:5px; min-width:18px; height:18px; padding:0 4px; border-radius:10px; background:var(--accent); color:#062b2b; }
+@media(max-width:700px) { #scrollToBottomButton { right:12px; bottom:112px; } }
 .sidebar-footer {
   padding:12px; border-top:1px solid var(--line); display:flex; align-items:center; gap:10px;
 }
@@ -313,6 +320,7 @@ label { display:block; font-size:13px; color:var(--muted); margin-top:17px; }
       <div id="messages" aria-live="polite">
         <div class="empty-chat">Выбери чат, чтобы увидеть сообщения.</div>
       </div>
+      <button id="scrollToBottomButton" class="hidden" type="button" aria-label="Перейти к последним сообщениям">↓ Последние сообщения <span id="scrollUnreadCount" class="scroll-unread hidden">0</span></button>
       <div class="composer-wrap">
         <div id="replyBar" class="hidden">
           <span>↪</span>
@@ -381,6 +389,8 @@ let currentProfile = null;
 let chats = [];
 let activeChat = null;
 let messages = [];
+let chatSummaries = {};
+let unreadWhileAway = 0;
 
 let presenceTimer = null;
 let presenceChannel = null;
@@ -928,7 +938,59 @@ async function loadChats() {
   if (chatError) throw chatError;
 
   chats = chatRows || [];
+  await loadChatSummaries();
   renderChatList();
+}
+
+async function loadChatSummaries() {
+  if (!currentUser || !chats.length) {
+    chatSummaries = {};
+    return;
+  }
+  const next = {};
+  await Promise.all(chats.map(async chat => {
+    try {
+      const latestResult = await sb.from("messages")
+        .select("*")
+        .eq("chat_id", chat.id)
+        .is("deleted_at", null)
+        .order("created_at", {ascending:false})
+        .limit(1);
+      if (latestResult.error) throw latestResult.error;
+      const latest = latestResult.data?.[0] || null;
+      let unread = 0;
+      if (chat.id !== activeChat?.id) {
+        const unreadResult = await sb.from("messages")
+          .select("id", {count:"exact", head:true})
+          .eq("chat_id", chat.id)
+          .neq("sender_id", currentUser.id)
+          .is("read_at", null)
+          .is("deleted_at", null);
+        if (!unreadResult.error) unread = unreadResult.count || 0;
+      }
+      next[chat.id] = {latest, unread};
+    } catch (error) {
+      console.warn("Не удалось обновить превью чата:", error?.message || error);
+      next[chat.id] = chatSummaries[chat.id] || {latest:null, unread:0};
+    }
+  }));
+  chatSummaries = next;
+  chats.sort((a,b) => {
+    const ta = new Date(chatSummaries[a.id]?.latest?.created_at || a.created_at || 0).getTime();
+    const tb = new Date(chatSummaries[b.id]?.latest?.created_at || b.created_at || 0).getTime();
+    return tb - ta;
+  });
+}
+
+function summaryPreview(message) {
+  if (!message) return "Пока нет сообщений";
+  if (message.deleted_at) return "Сообщение удалено";
+  if (message.content) return (message.sender_id === currentUser?.id ? "Вы: " : "") + message.content;
+  if (message.message_type === "image" || message.image_url) return "📷 Фото";
+  if (message.message_type === "audio") return "🎤 Голосовое сообщение";
+  if (message.message_type === "video") return "🎬 Видео";
+  if (message.file_url || message.media_path) return "📎 Вложение";
+  return "Сообщение";
 }
 
 function chatTitle(chat) {
@@ -965,12 +1027,24 @@ function renderChatList() {
     title.className = "chat-item-title";
     title.textContent = chatTitle(chat);
 
+    const summary = chatSummaries[chat.id] || {latest:null, unread:0};
     const preview = document.createElement("div");
     preview.className = "chat-item-preview";
-    preview.textContent = chat.id === activeChat?.id ? "Открыта переписка" : "Нажми, чтобы открыть чат";
+    preview.textContent = summaryPreview(summary.latest);
+
+    const side = document.createElement("div");
+    side.className = "chat-item-side";
+    const time = document.createElement("div");
+    time.className = "chat-item-time";
+    time.textContent = summary.latest ? formatTime(summary.latest.created_at) : "";
+    const unread = document.createElement("span");
+    unread.className = "chat-unread" + (summary.unread ? "" : " hidden");
+    unread.textContent = summary.unread > 99 ? "99+" : String(summary.unread);
+    unread.setAttribute("aria-label", summary.unread + " непрочитанных сообщений");
+    side.append(time, unread);
 
     copy.append(title, preview);
-    button.append(avatar, copy);
+    button.append(avatar, copy, side);
     button.addEventListener("click", () => openChat(chat));
     container.appendChild(button);
   });
@@ -1008,7 +1082,10 @@ async function openChat(chat) {
   renderChatList();
   await Promise.all([loadMembers(), loadMessages()]);
   await markMessagesAsRead();
+  if (chatSummaries[chat.id]) chatSummaries[chat.id].unread = 0;
+  renderChatList();
   subscribeToMessages();
+  updateScrollButton();
   $("messageInput").focus();
 }
 
@@ -1322,7 +1399,13 @@ function renderMessages() {
     container.appendChild(row);
   });
 
-  if (shouldScroll) container.scrollTop = container.scrollHeight;
+  if (shouldScroll) {
+    container.scrollTop = container.scrollHeight;
+    unreadWhileAway = 0;
+  } else if (activeChat && messages.length && messages[messages.length - 1]?.sender_id !== currentUser?.id) {
+    unreadWhileAway += 1;
+  }
+  updateScrollButton();
 }
 
 function addOrUpdateMessage(msg) {
@@ -1342,7 +1425,32 @@ function addOrUpdateMessage(msg) {
 function forceScrollDown() {
   const c = $("messages");
   c.scrollTop = c.scrollHeight;
+  unreadWhileAway = 0;
+  updateScrollButton();
 }
+
+function updateScrollButton() {
+  const c = $("messages");
+  const button = $("scrollToBottomButton");
+  if (!c || !button) return;
+  const distance = c.scrollHeight - c.scrollTop - c.clientHeight;
+  const away = distance > 180;
+  button.classList.toggle("hidden", !activeChat || !away);
+  const badge = $("scrollUnreadCount");
+  badge.textContent = unreadWhileAway > 99 ? "99+" : String(unreadWhileAway);
+  badge.classList.toggle("hidden", unreadWhileAway < 1);
+}
+
+$("scrollToBottomButton").addEventListener("click", () => {
+  $("messages").scrollTo({top:$("messages").scrollHeight, behavior:"smooth"});
+  unreadWhileAway = 0;
+  updateScrollButton();
+});
+
+$("messages").addEventListener("scroll", () => {
+  updateScrollButton();
+  if ($("messages").scrollTop < 100) loadOlderMessages();
+});
 
 function setReply(message) {
   replyToMessage = message;
@@ -1376,6 +1484,7 @@ async function sendMessage() {
     const {data: inserted, error} = await sb.from("messages").insert(row).select().single();
     if (error) throw error;
     addOrUpdateMessage(inserted);
+    loadChatSummaries().then(renderChatList).catch(error => console.debug("Chat summary refresh skipped:", error?.message || error));
     input.value = "";
     saveCurrentDraft();
     input.style.height = "42px";
@@ -1587,6 +1696,9 @@ function subscribeToMessages() {
         return;
       }
       addOrUpdateMessage(payload.new);
+      if (payload.eventType === "INSERT") {
+        loadChatSummaries().then(renderChatList).catch(error => console.debug("Chat summary refresh skipped:", error?.message || error));
+      }
       if (payload.eventType === "INSERT" && payload.new.sender_id !== currentUser?.id && document.visibilityState === "visible") {
         markMessagesAsRead();
       }
