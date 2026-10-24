@@ -2,6 +2,7 @@
 "use strict";
 
 import { sb, MEDIA_BUCKET } from "./supabase.js";
+import { escapeHtml, formatTime, initials, appendFormattedText } from "./utils/format.js";
 const $ = id => document.getElementById(id);
 // Set this to the public half of your VAPID key pair after generating it.
 const WEB_PUSH_VAPID_PUBLIC_KEY = "";
@@ -422,12 +423,6 @@ function updateHeaderStatus() {
 }
 setInterval(() => { if (otherProfile && activeChat) loadMembers(); }, 60000);
 
-function escapeHtml(value) {
-  return String(value ?? "").replace(/[&<>"']/g, char => ({
-    "&":"&amp;", "<":"&lt;", ">":"&gt;", '"':"&quot;", "'":"&#39;"
-  })[char]);
-}
-
 function showNotice(message, duration = 3500) {
   const el = $("notice");
   el.textContent = message;
@@ -439,11 +434,6 @@ function showNotice(message, duration = 3500) {
 function setLoginStatus(message, isError = false) {
   $("loginStatus").textContent = message || "";
   $("loginStatus").style.color = isError ? "var(--danger)" : "var(--muted)";
-}
-
-function initials(name) {
-  const parts = String(name || "M").trim().split(/\s+/);
-  return parts.slice(0, 2).map(s => s[0] || "").join("").toUpperCase() || "M";
 }
 
 /* Бакет приватный: файлы открываются по временным подписанным ссылкам */
@@ -481,13 +471,6 @@ function setAvatarElement(el, profile, fallbackName) {
       if (cachedUrl(path)) el.innerHTML = avatarMarkup(profile, fallbackName);
     });
   }
-}
-
-function formatTime(value) {
-  if (!value) return "";
-  const date = new Date(value);
-  if (Number.isNaN(date.getTime())) return "";
-  return date.toLocaleTimeString([], {hour:"2-digit", minute:"2-digit"});
 }
 
 function setLoggedIn(isLoggedIn) {
@@ -1576,34 +1559,6 @@ function addOrUpdateMessage(msg) {
     messages.sort((a, b) => new Date(a.created_at) - new Date(b.created_at));
   }
   renderMessages();
-}
-
-function appendFormattedText(container, value) {
-  // Safe Markdown subset: normal text, links, bold, italic and inline code.
-  const source = String(value ?? "");
-  const tokenPattern = /(https?:\/\/[^\s<]+|\*\*[^*]+\*\*|\*[^*\n]+\*|\x60[^\x60\n]+\x60)/g;
-  let last = 0, match;
-  while ((match = tokenPattern.exec(source))) {
-    if (match.index > last) container.appendChild(document.createTextNode(source.slice(last, match.index)));
-    const token = match[0];
-    if (/^https?:\/\//i.test(token)) {
-      const link = document.createElement("a");
-      link.href = token;
-      link.target = "_blank";
-      link.rel = "noopener noreferrer";
-      link.textContent = token;
-      link.className = "message-link";
-      container.appendChild(link);
-    } else {
-      const element = token.startsWith("**") ? document.createElement("strong")
-        : token.startsWith("*") ? document.createElement("em")
-        : document.createElement("code");
-      element.textContent = token.startsWith("**") ? token.slice(2,-2) : token.slice(1,-1);
-      container.appendChild(element);
-    }
-    last = tokenPattern.lastIndex;
-  }
-  if (last < source.length) container.appendChild(document.createTextNode(source.slice(last)));
 }
 
 async function refreshReactions() {
