@@ -1342,6 +1342,37 @@ async function markMessagesAsRead() {
   }
 }
 
+function appendLinkPreview(container, content) {
+  const match = String(content || "").match(/https?:\/\/[^\s<>"']+/i);
+  if (!match) return;
+  const rawUrl = match[0].replace(/[),.!?;:]+$/, "");
+  let url;
+  try { url = new URL(rawUrl); } catch { return; }
+  if (!["http:","https:"].includes(url.protocol)) return;
+  const card = document.createElement("div");
+  card.className = "link-preview";
+  const icon = document.createElement("span");
+  icon.className = "link-preview-icon";
+  icon.textContent = "↗";
+  icon.setAttribute("aria-hidden","true");
+  const copy = document.createElement("div");
+  copy.className = "link-preview-copy";
+  const host = document.createElement("div");
+  host.className = "link-preview-host";
+  host.textContent = url.hostname.replace(/^www\./i,"");
+  const path = document.createElement("div");
+  path.className = "link-preview-url";
+  path.textContent = url.pathname === "/" ? url.hostname : url.pathname;
+  const link = document.createElement("a");
+  link.href = url.href;
+  link.target = "_blank";
+  link.rel = "noopener noreferrer nofollow";
+  link.textContent = "Открыть ссылку";
+  copy.append(host,path,link);
+  card.append(icon,copy);
+  container.appendChild(card);
+}
+
 function renderMessages() {
   const container = $("messages");
   updatePinnedBanner();
@@ -1404,6 +1435,21 @@ function renderMessages() {
     const row = document.createElement("div");
     row.className = "message-row " + (own ? "own" : "other");
     row.dataset.messageId = String(message.id);
+    let touchStart = null;
+    row.addEventListener("touchstart", event => {
+      if (event.touches.length !== 1 || event.target.closest("button,a,input,textarea,video,audio")) {
+        touchStart = null;
+        return;
+      }
+      touchStart = {x:event.touches[0].clientX,y:event.touches[0].clientY};
+    }, {passive:true});
+    row.addEventListener("touchend", event => {
+      if (!touchStart || event.changedTouches.length !== 1) return;
+      const dx = event.changedTouches[0].clientX - touchStart.x;
+      const dy = event.changedTouches[0].clientY - touchStart.y;
+      touchStart = null;
+      if (dx > 72 && Math.abs(dy) < 48 && !message.__pending && !message.__failed) setReply(message);
+    }, {passive:true});
     if (selectionMode && own && !message.__pending && !message.__failed) {
       const select = document.createElement("input");
       select.type = "checkbox";
@@ -1475,6 +1521,7 @@ function renderMessages() {
         text.className = "message-text";
         appendFormattedText(text, message.content);
         bubble.appendChild(text);
+        appendLinkPreview(bubble, message.content);
       }
     }
 
