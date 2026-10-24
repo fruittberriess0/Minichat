@@ -13,6 +13,8 @@ create index if not exists profiles_username_lower_idx
 
 alter table public.chat_members add column if not exists role text not null default 'member';
 alter table public.messages add column if not exists expires_at timestamptz;
+alter table public.messages add column if not exists is_pinned boolean not null default false;
+create index if not exists messages_expires_at_idx on public.messages (expires_at) where expires_at is not null;
 
 create or replace function public.is_chat_member(p_chat_id uuid)
 returns boolean language sql stable security definer
@@ -84,9 +86,22 @@ create table if not exists public.chat_preferences (
   chat_id uuid not null references public.chats(id) on delete cascade,
   muted boolean not null default false,
   wallpaper text not null default 'dots' check (wallpaper in ('dots','plain','hearts')),
+  message_expiry_seconds integer not null default 0 check (message_expiry_seconds in (0,3600,86400,604800)),
   updated_at timestamptz not null default now(),
   primary key (user_id, chat_id)
 );
+alter table public.chat_preferences add column if not exists message_expiry_seconds integer not null default 0;
+do $$
+begin
+  if not exists (
+    select 1 from pg_constraint
+    where conname = 'chat_preferences_message_expiry_seconds_check'
+  ) then
+    alter table public.chat_preferences
+      add constraint chat_preferences_message_expiry_seconds_check
+      check (message_expiry_seconds in (0,3600,86400,604800));
+  end if;
+end $$;
 alter table public.chat_preferences enable row level security;
 drop policy if exists chat_preferences_select_self on public.chat_preferences;
 create policy chat_preferences_select_self on public.chat_preferences
@@ -197,6 +212,7 @@ begin
     from public.messages m
     where public.is_chat_member(m.chat_id)
       and m.deleted_at is null
+      and (m.expires_at is null or m.expires_at > now())
       and coalesce(m.content,'') <> ''
       and to_tsvector('simple', coalesce(m.content,'')) @@ plainto_tsquery('simple', q)
     order by m.created_at desc
@@ -285,6 +301,7 @@ begin
     select m.id,m.sender_id,m.content,m.created_at,m.message_type,m.file_name
     from public.messages m
     where m.chat_id=cm.chat_id and m.deleted_at is null
+      and (m.expires_at is null or m.expires_at > now())
     order by m.created_at desc
     limit 1
   ) latest on true
@@ -293,6 +310,7 @@ begin
     from public.messages m
     where m.chat_id=cm.chat_id and m.sender_id <> auth.uid()
       and m.read_at is null and m.deleted_at is null
+      and (m.expires_at is null or m.expires_at > now())
   ) unread on true
   where cm.user_id=auth.uid();
 end;
@@ -319,11 +337,96 @@ begin
     'active_days',count(distinct (created_at at time zone 'UTC')::date)
   ) into result
   from public.messages
-  where chat_id=p_chat_id and deleted_at is null;
+  where chat_id=p_chat_id and deleted_at is null
+    and (expires_at is null or expires_at > now());
   return result;
 end;
 $$;
 revoke all on function public.get_chat_stats(uuid) from public;
 grant execute on function public.get_chat_stats(uuid) to authenticated;
+
+
+create or replace function public.set_message_pinned(p_msg uuid, p_pinned boolean)
+returns void
+language plpgsql security definer
+set search_path = public, pg_temp
+as $$
+declare target_chat uuid;
+begin
+  if auth.uid() is null then raise exception 'Authentication required'; end if;
+  select m.chat_id into target_chat from public.messages m where m.id=p_msg and m.deleted_at is null;
+  if target_chat is null or not public.is_chat_member(target_chat) then
+    raise exception 'Message not found or chat membership required';
+  end if;
+  if p_pinned then
+    update public.messages set is_pinned=false
+    where chat_id=target_chat and is_pinned=true;
+  end if;
+  update public.messages set is_pinned=p_pinned
+  where id=p_msg and chat_id=target_chat;
+end;
+$$;
+revoke all on function public.set_message_pinned(uuid,boolean) from public;
+grant execute on function public.set_message_pinned(uuid,boolean) to authenticated;
+
+create or replace function public.add_chat_member(p_chat_id uuid, p_user_id uuid)
+returns void
+language plpgsql security definer
+set search_path = public, pg_temp
+as $$
+declare caller_role text;
+begin
+  if auth.uid() is null then raise exception 'Authentication required'; end if;
+  select cm.role into caller_role from public.chat_members cm
+    where cm.chat_id=p_chat_id and cm.user_id=auth.uid();
+  if caller_role not in ('owner','admin') then raise exception 'Only an owner or admin can add members'; end if;
+  if not exists (select 1 from auth.users u where u.id=p_user_id) then raise exception 'User not found'; end if;
+  insert into public.chat_members (chat_id,user_id,role)
+  values (p_chat_id,p_user_id,'member')
+  on conflict do nothing;
+end;
+$$;
+revoke all on function public.add_chat_member(uuid,uuid) from public;
+grant execute on function public.add_chat_member(uuid,uuid) to authenticated;
+
+create or replace function public.rename_chat(p_chat_id uuid, p_title text)
+returns void
+language plpgsql security definer
+set search_path = public, pg_temp
+as $$
+declare caller_role text;
+begin
+  if auth.uid() is null then raise exception 'Authentication required'; end if;
+  if length(trim(coalesce(p_title,''))) < 1 or length(trim(p_title)) > 80 then
+    raise exception 'Group name must be 1-80 characters';
+  end if;
+  select cm.role into caller_role from public.chat_members cm
+    where cm.chat_id=p_chat_id and cm.user_id=auth.uid();
+  if caller_role not in ('owner','admin') then raise exception 'Only an owner or admin can rename the group'; end if;
+  update public.chats set title=trim(p_title)
+    where id=p_chat_id and is_group=true;
+  if not found then raise exception 'Group chat not found'; end if;
+end;
+$$;
+revoke all on function public.rename_chat(uuid,text) from public;
+grant execute on function public.rename_chat(uuid,text) to authenticated;
+
+create or replace function public.purge_expired_messages()
+returns integer
+language plpgsql security definer
+set search_path = public, pg_temp
+as $$
+declare removed_count integer;
+begin
+  if auth.uid() is null then raise exception 'Authentication required'; end if;
+  delete from public.messages m
+  where m.expires_at is not null and m.expires_at <= now()
+    and public.is_chat_member(m.chat_id);
+  get diagnostics removed_count = row_count;
+  return removed_count;
+end;
+$$;
+revoke all on function public.purge_expired_messages() from public;
+grant execute on function public.purge_expired_messages() to authenticated;
 
 commit;
