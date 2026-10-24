@@ -2,6 +2,22 @@
 "use strict";
 
 import { sb, MEDIA_BUCKET } from "./supabase.js";
+import * as Sentry from "@sentry/browser";
+import { inject as injectVercelAnalytics } from "@vercel/analytics";
+
+const sentryDsn = import.meta.env.VITE_SENTRY_DSN;
+if (sentryDsn) {
+  Sentry.init({
+    dsn:sentryDsn,
+    environment:import.meta.env.MODE || "production",
+    sendDefaultPii:false,
+    tracesSampleRate:0.05
+  });
+}
+if (import.meta.env.PROD) {
+  try { injectVercelAnalytics(); }
+  catch (error) { console.debug("Vercel Analytics is not enabled:",error?.message || error); }
+}
 import { escapeHtml, formatTime, initials, appendFormattedText } from "./utils/format.js";
 const $ = id => document.getElementById(id);
 // Set this to the public half of your VAPID key pair after generating it.
