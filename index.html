@@ -47,6 +47,9 @@ body { transition:background .18s,color .18s; }
 .message-link { color:var(--accent); text-decoration:underline; overflow-wrap:anywhere; }
 #messages.wallpaper-plain { background-image:none!important; }
 #messages.wallpaper-hearts { background-image:radial-gradient(ellipse at 20% 25%,#40d6bf12 0 2px,transparent 3px),radial-gradient(ellipse at 75% 65%,#ff718515 0 3px,transparent 4px)!important;background-size:50px 50px,65px 65px!important; }
+.message-select-checkbox { margin:8px;accent-color:var(--accent);width:17px;height:17px;flex-shrink:0; }
+.message-row.selected .message-bubble { outline:2px solid var(--accent); }
+#pinnedBanner { overflow:hidden;text-overflow:ellipsis;white-space:nowrap;cursor:pointer; }
 #mediaViewer { position:fixed;inset:0;z-index:1000;background:rgba(4,8,16,.94);display:flex;align-items:center;justify-content:center;padding:18px; }
 #mediaViewer img { max-width:min(94vw,1300px);max-height:86dvh;object-fit:contain;border-radius:8px; }
 #mediaViewer .viewer-close { position:absolute;top:max(14px,env(safe-area-inset-top));right:14px; }
@@ -303,7 +306,14 @@ label { display:block; font-size:13px; color:var(--muted); margin-top:17px; }
     <div class="search-wrap">
       <input class="field search" id="chatSearch" type="search" placeholder="Поиск чата...">
     </div>
-    <div class="section-label">Переписки</div>
+    <div class="section-label" style="display:flex;align-items:center;justify-content:space-between">
+      <span>Переписки</span>
+      <span style="display:flex;gap:5px">
+        <button class="icon-btn" id="newChatButton" type="button" title="Создать чат или группу" aria-label="Создать чат">＋</button>
+        <button class="icon-btn" id="savedMessagesButton" type="button" title="Сохранённые сообщения" aria-label="Сохранённые сообщения">☆</button>
+        <button class="icon-btn" id="globalSearchButton" type="button" title="Поиск по всем сообщениям" aria-label="Поиск по всем сообщениям">⌕</button>
+      </span>
+    </div>
     <div id="chatItems"></div>
     <div class="sidebar-footer">
       <div class="profile-mini" id="profileOpen" role="button" tabindex="0" title="Открыть профиль">
@@ -334,12 +344,15 @@ label { display:block; font-size:13px; color:var(--muted); margin-top:17px; }
         </div>
         <button class="icon-btn" id="messageSearchToggle" type="button" title="Поиск по сообщениям" aria-label="Поиск по сообщениям">⌕</button>
         <button class="icon-btn" id="exportChatButton" type="button" title="Экспортировать переписку" aria-label="Экспортировать переписку">⇩</button>
+        <button class="icon-btn" id="selectMessagesButton" type="button" title="Выбрать сообщения" aria-label="Выбрать сообщения">☑</button>
+        <button class="icon-btn hidden" id="deleteSelectedButton" type="button" title="Удалить выбранные" aria-label="Удалить выбранные">🗑</button>
         <button class="icon-btn" id="chatRefreshButton" type="button" title="Обновить сообщения">↻</button>
       </header>
       <div id="messageSearchBar" class="search-wrap hidden">
         <input class="field search" id="messageSearchInput" type="search" placeholder="Найти в этой переписке..." aria-label="Поиск по сообщениям">
         <div class="small muted" id="messageSearchCount" style="padding:7px 3px 0" aria-live="polite"></div>
       </div>
+      <button id="pinnedBanner" class="hidden" type="button" style="width:100%;text-align:left;padding:10px 15px;border:0;border-bottom:1px solid var(--line);background:var(--panel2);color:var(--text)">📌 <span id="pinnedBannerText">Закреплённое сообщение</span></button>
       <div id="messages" aria-live="polite">
         <div class="empty-chat">Выбери чат, чтобы увидеть сообщения.</div>
       </div>
@@ -444,6 +457,8 @@ let soundEnabled = true;
 let currentLanguage = "ru";
 let currentChatMuted = false;
 let isPasswordRecovery = new URLSearchParams(location.search).get("resetPassword") === "1";
+let selectionMode = false;
+let selectedMessageIds = new Set();
 let editingMessageId = null;
 let editingDraft = "";
 
@@ -1446,6 +1461,8 @@ async function markMessagesAsRead() {
 
 function renderMessages() {
   const container = $("messages");
+  updatePinnedBanner();
+  updateSelectionControls();
   const shouldScroll = container.scrollHeight - container.scrollTop - container.clientHeight < 140;
   container.innerHTML = "";
 
@@ -1503,6 +1520,21 @@ function renderMessages() {
     const row = document.createElement("div");
     row.className = "message-row " + (own ? "own" : "other");
     row.dataset.messageId = String(message.id);
+    if (selectionMode && own && !message.__pending && !message.__failed) {
+      const select = document.createElement("input");
+      select.type = "checkbox";
+      select.className = "message-select-checkbox";
+      select.checked = selectedMessageIds.has(message.id);
+      select.setAttribute("aria-label", "Выбрать сообщение");
+      select.addEventListener("change", () => {
+        if (select.checked) selectedMessageIds.add(message.id);
+        else selectedMessageIds.delete(message.id);
+        row.classList.toggle("selected", select.checked);
+        updateSelectionControls();
+      });
+      row.appendChild(select);
+      row.classList.toggle("selected", select.checked);
+    }
 
     const bubble = document.createElement("div");
     bubble.className = "message-bubble";
@@ -1709,6 +1741,15 @@ function renderMessages() {
       reactBtn.addEventListener("click", () => toggleReaction(message, reaction));
       actions.appendChild(reactBtn);
     });
+    const saveBtn = document.createElement("button");
+    saveBtn.type = "button";
+    saveBtn.className = "icon-btn";
+    saveBtn.style.cssText = "width:28px;height:26px;font-size:12px";
+    saveBtn.title = "Сохранить сообщение";
+    saveBtn.textContent = "☆";
+    saveBtn.addEventListener("click", () => saveMessageForLater(message));
+    actions.appendChild(saveBtn);
+
     const forwardBtn = document.createElement("button");
     forwardBtn.type = "button";
     forwardBtn.className = "icon-btn";
@@ -2365,6 +2406,161 @@ function subscribeToMessages() {
       }
     });
 }
+
+$("pinnedBanner").addEventListener("click", () => {
+  const pinned = messages.find(message => message.is_pinned);
+  if (pinned) jumpToMessage(pinned.id);
+});
+$("selectMessagesButton").addEventListener("click", () => {
+  selectionMode = !selectionMode;
+  if (!selectionMode) selectedMessageIds.clear();
+  $("selectMessagesButton").textContent = selectionMode ? "×" : "☑";
+  $("selectMessagesButton").title = selectionMode ? "Отменить выбор" : "Выбрать сообщения";
+  renderMessages();
+});
+$("deleteSelectedButton").addEventListener("click", deleteSelectedMessages);
+
+async function createChatFromPrompt() {
+  if (!currentUser) return;
+  const group = confirm("Создать группу? Нажми «Отмена», если нужен личный чат.");
+  const raw = prompt(group ? "Введи имена или email участников через запятую:" : "Введи имя пользователя или email:");
+  if (!raw?.trim()) return;
+  const queries = [...new Set(raw.split(",").map(item => item.trim()).filter(Boolean))];
+  if (!queries.length) return;
+  const memberIds = [];
+  const names = [];
+  try {
+    for (const query of queries) {
+      const {data,error} = await sb.rpc("find_chat_user", {p_query:query});
+      if (error) throw error;
+      const user = data?.[0];
+      if (!user?.user_id) throw new Error("Не найден пользователь: " + query);
+      memberIds.push(user.user_id);
+      names.push(user.username || query);
+    }
+    const title = group ? (prompt("Название группы:") || names.join(", ")).trim() : "";
+    const {data:chatId,error} = await sb.rpc("create_chat_with_members", {
+      p_title:title, p_is_group:group, p_member_ids:memberIds
+    });
+    if (error) throw error;
+    await loadChats();
+    const created = chats.find(chat => chat.id === chatId);
+    if (created) await openChat(created);
+    showNotice(group ? "Группа создана ❤️" : "Чат создан ❤️");
+  } catch (error) {
+    showNotice("Создание чата требует миграции Supabase и доступа к RPC: " + safeError(error), 7000);
+  }
+}
+$("newChatButton").addEventListener("click", createChatFromPrompt);
+
+async function saveMessageForLater(message) {
+  if (!message?.id || String(message.id).startsWith("local-")) return;
+  try {
+    const {data:existing,error:readError} = await sb.from("saved_messages").select("id")
+      .eq("user_id",currentUser.id).eq("message_id",message.id).maybeSingle();
+    if (readError) throw readError;
+    if (existing) {
+      const {error} = await sb.from("saved_messages").delete().eq("id",existing.id).eq("user_id",currentUser.id);
+      if (error) throw error;
+      showNotice("Убрано из сохранённого.");
+    } else {
+      const {error} = await sb.from("saved_messages").insert({user_id:currentUser.id,message_id:message.id});
+      if (error) throw error;
+      showNotice("Сохранено ⭐");
+    }
+  } catch (error) {
+    showNotice("Сохранённые сообщения требуют миграции Supabase: " + safeError(error), 6000);
+  }
+}
+async function showSavedMessages() {
+  try {
+    const {data:saved,error} = await sb.from("saved_messages").select("message_id,created_at")
+      .eq("user_id",currentUser.id).order("created_at",{ascending:false}).limit(100);
+    if (error) throw error;
+    const ids = (saved || []).map(item => item.message_id);
+    if (!ids.length) { showNotice("Пока нет сохранённых сообщений."); return; }
+    const {data:rows,error:rowsError} = await sb.from("messages").select("id,chat_id,content,created_at")
+      .in("id",ids);
+    if (rowsError) throw rowsError;
+    const byId = new Map((rows || []).map(row => [row.id,row]));
+    const choices = ids.map((id,index) => {
+      const row = byId.get(id);
+      const chat = chats.find(item => item.id === row?.chat_id);
+      return (index + 1) + ". [" + (chat ? chatTitle(chat) : "Чат") + "] " + (row?.content || "Вложение").slice(0,90);
+    }).join("\n");
+    const choice = prompt("Сохранённые сообщения:\n" + choices + "\n\nВведи номер, чтобы открыть:", "1");
+    if (choice === null) return;
+    const row = byId.get(ids[Number(choice) - 1]);
+    const chat = chats.find(item => item.id === row?.chat_id);
+    if (!row || !chat) { showNotice("Не удалось найти это сообщение."); return; }
+    await openChat(chat);
+    let guard = 0;
+    while (!messages.some(item => item.id === row.id) && hasMoreMessages && guard++ < 40) await loadOlderMessages();
+    jumpToMessage(row.id);
+  } catch (error) {
+    showNotice("Сохранённые сообщения требуют миграции Supabase: " + safeError(error), 6000);
+  }
+}
+$("savedMessagesButton").addEventListener("click", showSavedMessages);
+
+async function deleteSelectedMessages() {
+  const ids = [...selectedMessageIds];
+  if (!ids.length) { showNotice("Сначала выбери свои сообщения."); return; }
+  if (!confirm("Удалить выбранные сообщения (" + ids.length + ")?")) return;
+  try {
+    const {error} = await sb.from("messages")
+      .update({deleted_at:new Date().toISOString()})
+      .in("id",ids).eq("sender_id",currentUser.id);
+    if (error) throw error;
+    messages = messages.filter(message => !selectedMessageIds.has(message.id));
+    selectedMessageIds.clear();
+    selectionMode = false;
+    $("selectMessagesButton").textContent = "☑";
+    $("selectMessagesButton").title = "Выбрать сообщения";
+    renderMessages();
+    showNotice("Выбранные сообщения удалены.");
+  } catch (error) {
+    showNotice("Не удалось удалить выбранные сообщения: " + safeError(error), 6000);
+  }
+}
+function updateSelectionControls() {
+  const button = $("deleteSelectedButton");
+  if (!button) return;
+  button.classList.toggle("hidden", !selectionMode);
+  button.textContent = selectedMessageIds.size ? "🗑 " + selectedMessageIds.size : "🗑";
+  button.disabled = selectedMessageIds.size === 0;
+}
+function updatePinnedBanner() {
+  const banner = $("pinnedBanner");
+  if (!banner) return;
+  const pinned = messages.find(message => message.is_pinned);
+  banner.classList.toggle("hidden", !pinned);
+  $("pinnedBannerText").textContent = pinned ? (pinned.content || pinned.file_name || "Закреплено вложение") : "Закреплённое сообщение";
+}
+$("globalSearchButton").addEventListener("click", async () => {
+  const query = prompt("Найти текст во всех переписках:");
+  if (!query?.trim()) return;
+  try {
+    const {data,error} = await sb.rpc("search_chat_messages", {p_query:query.trim()});
+    if (error) throw error;
+    if (!data?.length) { showNotice("Ничего не найдено."); return; }
+    const choices = data.slice(0,30).map((item,index) => {
+      const chat = chats.find(chatItem => chatItem.id === item.chat_id);
+      return (index + 1) + ". [" + (chat ? chatTitle(chat) : "Чат") + "] " + (item.content || "Вложение").slice(0,90);
+    }).join("\n");
+    const choice = prompt("Результаты поиска:\n" + choices + "\n\nВведи номер:", "1");
+    if (choice === null) return;
+    const result = data[Number(choice) - 1];
+    const chat = chats.find(chatItem => chatItem.id === result?.chat_id);
+    if (!result || !chat) return;
+    await openChat(chat);
+    let guard = 0;
+    while (!messages.some(item => item.id === result.id) && hasMoreMessages && guard++ < 50) await loadOlderMessages();
+    jumpToMessage(result.id);
+  } catch (error) {
+    showNotice("Глобальный поиск требует миграции Supabase: " + safeError(error), 6000);
+  }
+});
 
 $("chatRefreshButton").addEventListener("click", async () => {
   await loadMessages();
