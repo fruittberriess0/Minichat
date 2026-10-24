@@ -1553,6 +1553,42 @@ function renderMessages() {
         audio.preload = "metadata";
         audio.style.cssText = "display:block;width:min(280px,100%);margin-top:8px";
         audio.setAttribute("aria-label", message.file_name || "Аудиосообщение");
+        const waveformValues = Array.isArray(message.waveform) ? message.waveform : [];
+        let waveformBars = [];
+        if (waveformValues.length) {
+          const waveform = document.createElement("div");
+          waveform.className = "voice-waveform";
+          waveform.setAttribute("role","slider");
+          waveform.setAttribute("aria-label","Форма аудиосообщения. Нажми, чтобы перейти по записи.");
+          waveform.setAttribute("tabindex","0");
+          waveformValues.slice(0,64).forEach((peak,index) => {
+            const bar = document.createElement("span");
+            bar.className = "voice-waveform-bar";
+            bar.style.height = Math.max(8,Math.min(100,Number(peak)||8)) + "%";
+            waveform.appendChild(bar);
+            waveformBars.push(bar);
+          });
+          const seekWaveform = event => {
+            if (!Number.isFinite(audio.duration) || !audio.duration) return;
+            const rect = waveform.getBoundingClientRect();
+            const fraction = Math.max(0,Math.min(1,(event.clientX - rect.left) / Math.max(1,rect.width)));
+            audio.currentTime = fraction * audio.duration;
+            audio.play().catch(() => {});
+          };
+          waveform.addEventListener("click",seekWaveform);
+          waveform.addEventListener("keydown",event => {
+            if (event.key === "ArrowRight" || event.key === "ArrowLeft") {
+              event.preventDefault();
+              if (!Number.isFinite(audio.duration) || !audio.duration) return;
+              audio.currentTime = Math.max(0,Math.min(audio.duration,audio.currentTime + (event.key === "ArrowRight" ? 3 : -3)));
+            }
+          });
+          audio.addEventListener("timeupdate",() => {
+            const fraction = audio.duration ? audio.currentTime / audio.duration : 0;
+            waveformBars.forEach((bar,index) => bar.classList.toggle("played",index / Math.max(1,waveformBars.length) <= fraction));
+          });
+          bubble.appendChild(waveform);
+        }
         const first = cachedUrl(mediaPath);
         if (first) audio.src = first;
         else ensureUrl(mediaPath).then(u => { if (u) audio.src = u; });
@@ -2079,6 +2115,44 @@ async function compressImage(file) {
   }
 }
 
+async function computeAudioWaveform(file,bars = 48) {
+  if (!file?.type?.startsWith("audio/")) return null;
+  let context;
+  try {
+    const AudioContextClass = window.AudioContext || window.webkitAudioContext;
+    if (!AudioContextClass) return null;
+    context = new AudioContextClass();
+    const buffer = await context.decodeAudioData(await file.arrayBuffer());
+    const samples = buffer.getChannelData(0);
+    const values = [];
+    const bucketSize = Math.max(1,Math.floor(samples.length / bars));
+    for (let index=0; index<bars; index++) {
+      const start = index * bucketSize;
+      const end = index === bars - 1 ? samples.length : Math.min(samples.length,start + bucketSize);
+      let peak = 0;
+      for (let cursor=start;cursor<end;cursor++) peak = Math.max(peak,Math.abs(samples[cursor] || 0));
+      values.push(Math.max(8,Math.min(100,Math.round(peak * 100))));
+    }
+    return values;
+  } catch (error) {
+    console.debug("Audio waveform is unavailable for this codec:",error?.message || error);
+    return null;
+  } finally {
+    if (context && context.state !== "closed") context.close().catch(() => {});
+  }
+}
+async function insertMessageWithOptionalWaveform(row) {
+  let result = await sb.from("messages").insert(row).select().single();
+  if (result.error && Array.isArray(row.waveform) &&
+      /waveform|PGRST204|42703/i.test((result.error.message || "") + " " + (result.error.code || ""))) {
+    const fallback = {...row};
+    delete fallback.waveform;
+    result = await sb.from("messages").insert(fallback).select().single();
+  }
+  if (result.error) throw result.error;
+  return result.data;
+}
+
 async function uploadOneFile(originalFile, chatId, replyId, forcedMessageType = null) {
   let file = await compressImage(originalFile);
   if (file.size > 25 * 1024 * 1024) throw new Error(file.name + ": файл больше 25 МБ");
@@ -2091,10 +2165,12 @@ async function uploadOneFile(originalFile, chatId, replyId, forcedMessageType = 
   const isImage = file.type.startsWith("image/");
   const isAudio = file.type.startsWith("audio/");
   const isVideo = file.type.startsWith("video/");
+  const waveform = isAudio ? await computeAudioWaveform(file) : null;
   const row = {
     chat_id:chatId,
     sender_id:currentUser.id,
     content:"",
+    ...(waveform ? {waveform} : {}),
     message_type:forcedMessageType || (isImage ? "image" : isAudio ? "audio" : isVideo ? "video" : "file"),
     media_path:path,
     file_name:file.name,
@@ -2104,8 +2180,7 @@ async function uploadOneFile(originalFile, chatId, replyId, forcedMessageType = 
     reply_to_id:replyId || null,
     ...(currentExpirySeconds ? {expires_at:new Date(Date.now() + currentExpirySeconds * 1000).toISOString()} : {})
   };
-  const {data:insertedFile,error:insertError} = await sb.from("messages").insert(row).select().single();
-  if (insertError) throw insertError;
+  const insertedFile = await insertMessageWithOptionalWaveform(row);
   if (activeChat?.id === chatId) addOrUpdateMessage(insertedFile);
 }
 
