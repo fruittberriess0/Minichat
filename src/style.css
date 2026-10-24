@@ -251,3 +251,6 @@ label { display:block; font-size:13px; color:var(--muted); margin-top:17px; }
   .sidebar-footer { padding-bottom:max(12px,env(safe-area-inset-bottom)); }
   .login-card { padding:25px 21px; }
 }
+
+.format-toolbar { display:flex;flex-wrap:wrap;align-items:center;gap:6px;padding:7px 2px; }
+.message-video-note { width:min(260px,76vw);aspect-ratio:1/1;max-width:100%;border-radius:50%;object-fit:cover;background:#000; }
