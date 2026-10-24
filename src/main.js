@@ -261,9 +261,14 @@ $("wallpaperSelect").addEventListener("change", async event => {
   }
 });
 $("messageExpirySelect").addEventListener("change", async event => {
+  const previous = currentExpirySeconds;
   currentExpirySeconds = Math.max(0, Number(event.target.value) || 0);
   try { await saveChatPreferences(); }
-  catch (error) { showNotice("Срок жизни сообщений требует миграции Supabase: " + safeError(error), 6000); }
+  catch (error) {
+    currentExpirySeconds = previous;
+    $("messageExpirySelect").value = String(previous);
+    showNotice("Срок жизни сообщений требует миграции Supabase: " + safeError(error), 6000);
+  }
 });
 $("languageSelect").addEventListener("change", event => { currentLanguage = event.target.value; applyLanguage(); });
 $("soundToggle").addEventListener("change", event => {
@@ -668,6 +673,9 @@ async function initializeUser(user) {
   try {
     await loadProfile();
     await loadChats();
+    sb.rpc("purge_expired_messages").then(({error}) => {
+      if (error) console.debug("Expiry cleanup is unavailable before the messaging migration:", error.message);
+    });
     lockAppIfConfigured();
   } catch (error) {
     showNotice("Не удалось загрузить данные: " + safeError(error), 6000);
@@ -1760,7 +1768,7 @@ async function sendMessage() {
     content,
     message_type: "text",
     reply_to_id: replyToMessage?.id || null,
-    expires_at: currentExpirySeconds ? new Date(Date.now() + currentExpirySeconds * 1000).toISOString() : null
+    ...(currentExpirySeconds ? {expires_at:new Date(Date.now() + currentExpirySeconds * 1000).toISOString()} : {})
   };
   const pending = {
     id:"local-" + Date.now() + "-" + Math.floor(Math.random() * 1000000),
@@ -1769,7 +1777,7 @@ async function sendMessage() {
     content,
     message_type:"text",
     reply_to_id:row.reply_to_id,
-    expires_at:row.expires_at,
+    ...(row.expires_at ? {expires_at:row.expires_at} : {}),
     created_at:new Date().toISOString(),
     __pending:true,
     __payload:row
@@ -1933,7 +1941,7 @@ async function uploadOneFile(originalFile, chatId, replyId) {
     image_url:null,
     file_url:null,
     reply_to_id:replyId || null,
-    expires_at:currentExpirySeconds ? new Date(Date.now() + currentExpirySeconds * 1000).toISOString() : null
+    ...(currentExpirySeconds ? {expires_at:new Date(Date.now() + currentExpirySeconds * 1000).toISOString()} : {})
   };
   const {data:insertedFile,error:insertError} = await sb.from("messages").insert(row).select().single();
   if (insertError) throw insertError;
