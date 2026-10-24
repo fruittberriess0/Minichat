@@ -31,6 +31,13 @@ html[data-theme="light"] { color-scheme:light; }
 body { transition:background .18s,color .18s; }
 .message-text { font-size:var(--message-font-size,16px); overflow-wrap:anywhere; }
 .message-link { color:var(--accent); text-decoration:underline; overflow-wrap:anywhere; }
+.link-preview { display:flex;align-items:center;gap:10px;margin-top:9px;padding:10px 11px;border:1px solid var(--line);border-left:3px solid var(--accent);border-radius:12px;background:var(--panel2);max-width:100%; }
+.link-preview-icon { width:32px;height:32px;flex-shrink:0;display:grid;place-items:center;border-radius:9px;background:color-mix(in srgb,var(--accent) 18%,transparent);color:var(--accent);font-weight:900;font-size:18px; }
+.link-preview-copy { min-width:0;flex:1; }
+.link-preview-host { font-size:12px;font-weight:800;overflow-wrap:anywhere; }
+.link-preview-url { color:var(--muted);font-size:11px;margin:3px 0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap; }
+.link-preview a { color:var(--accent);font-size:11px;font-weight:700;text-decoration:none; }
+.link-preview a:hover { text-decoration:underline; }
 #messages.wallpaper-plain { background-image:none!important; }
 #messages.wallpaper-hearts { background-image:radial-gradient(ellipse at 20% 25%,#40d6bf12 0 2px,transparent 3px),radial-gradient(ellipse at 75% 65%,#ff718515 0 3px,transparent 4px)!important;background-size:50px 50px,65px 65px!important; }
 .message-select-checkbox { margin:8px;accent-color:var(--accent);width:17px;height:17px;flex-shrink:0; }
