@@ -14,6 +14,7 @@ create index if not exists profiles_username_lower_idx
 alter table public.chat_members add column if not exists role text not null default 'member';
 alter table public.messages add column if not exists expires_at timestamptz;
 alter table public.messages add column if not exists is_pinned boolean not null default false;
+alter table public.messages add column if not exists waveform smallint[];
 create index if not exists messages_expires_at_idx on public.messages (expires_at) where expires_at is not null;
 
 create or replace function public.is_chat_member(p_chat_id uuid)
