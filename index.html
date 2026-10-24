@@ -1289,7 +1289,7 @@ $("cancelReplyButton").addEventListener("click", () => {
   $("replyBar").classList.add("hidden");
 });
 
-async function sendMessage() {
+async async function sendMessage() {
   if (!currentUser || !activeChat || sending) return;
   const input = $("messageInput");
   const content = input.value.trim();
