@@ -874,7 +874,33 @@ async function loadChats() {
 async function loadChatSummaries() {
   if (!currentUser || !chats.length) {
     chatSummaries = {};
+    updateUnreadTitle();
     return;
+  }
+  try {
+    const {data,error} = await sb.rpc("get_chat_summaries");
+    if (!error && Array.isArray(data)) {
+      const next = {};
+      (data || []).forEach(row => {
+        const latest = row.latest_id ? {
+          id:row.latest_id,chat_id:row.chat_id,sender_id:row.latest_sender_id,
+          content:row.latest_content,created_at:row.latest_created_at,
+          message_type:row.latest_message_type,file_name:row.latest_file_name
+        } : null;
+        next[row.chat_id] = {latest,unread:row.chat_id === activeChat?.id ? 0 : Number(row.unread_count || 0)};
+      });
+      chatSummaries = next;
+      chats.sort((a,b) => {
+        const ta = new Date(chatSummaries[a.id]?.latest?.created_at || a.created_at || 0).getTime();
+        const tb = new Date(chatSummaries[b.id]?.latest?.created_at || b.created_at || 0).getTime();
+        return tb - ta;
+      });
+      updateUnreadTitle();
+      return;
+    }
+    if (error) console.debug("Summary RPC unavailable; using fallback:", error.message);
+  } catch (error) {
+    console.debug("Summary RPC unavailable; using fallback:", error?.message || error);
   }
   const next = {};
   await Promise.all(chats.map(async chat => {
@@ -2225,6 +2251,22 @@ function updatePinnedBanner() {
   banner.classList.toggle("hidden", !pinned);
   $("pinnedBannerText").textContent = pinned ? (pinned.content || pinned.file_name || "Закреплено вложение") : "Закреплённое сообщение";
 }
+async function showChatStats() {
+  if (!activeChat) return;
+  try {
+    const {data,error} = await sb.rpc("get_chat_stats", {p_chat_id:activeChat.id});
+    if (error) throw error;
+    const total = Number(data?.total_messages || 0);
+    const mine = Number(data?.my_messages || 0);
+    const other = Number(data?.other_messages || 0);
+    const days = Number(data?.active_days || 0);
+    showNotice("Статистика: " + total + " сообщений · твоих " + mine + " · собеседника " + other + " · активных дней " + days, 7000);
+  } catch (error) {
+    showNotice("Статистика требует применения миграции Supabase: " + safeError(error), 6000);
+  }
+}
+$("chatStatsButton").addEventListener("click", showChatStats);
+
 $("globalSearchButton").addEventListener("click", async () => {
   const query = prompt("Найти текст во всех переписках:");
   if (!query?.trim()) return;
