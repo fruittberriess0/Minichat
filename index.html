@@ -47,6 +47,12 @@ body { transition:background .18s,color .18s; }
 .message-link { color:var(--accent); text-decoration:underline; overflow-wrap:anywhere; }
 #messages.wallpaper-plain { background-image:none!important; }
 #messages.wallpaper-hearts { background-image:radial-gradient(ellipse at 20% 25%,#40d6bf12 0 2px,transparent 3px),radial-gradient(ellipse at 75% 65%,#ff718515 0 3px,transparent 4px)!important;background-size:50px 50px,65px 65px!important; }
+#mediaViewer { position:fixed;inset:0;z-index:1000;background:rgba(4,8,16,.94);display:flex;align-items:center;justify-content:center;padding:18px; }
+#mediaViewer img { max-width:min(94vw,1300px);max-height:86dvh;object-fit:contain;border-radius:8px; }
+#mediaViewer .viewer-close { position:absolute;top:max(14px,env(safe-area-inset-top));right:14px; }
+#mediaViewer .viewer-nav { position:absolute;top:50%;transform:translateY(-50%);font-size:22px;width:48px;height:54px; }
+#mediaViewer .viewer-prev { left:12px; } #mediaViewer .viewer-next { right:12px; }
+#messages { position:relative; }
 
 .message-row.message-highlight .message-bubble { outline:2px solid var(--accent); box-shadow:0 0 0 5px #40d6bf22; }
 .message-bubble { border:1px solid #ffffff08; }
@@ -346,12 +352,18 @@ label { display:block; font-size:13px; color:var(--muted); margin-top:17px; }
         </div>
         <div class="composer">
           <button class="icon-btn" id="emojiButton" type="button" title="Добавить эмодзи" aria-label="Добавить эмодзи">☺</button>
-          <button class="icon-btn" id="attachmentButton" type="button" title="Прикрепить файл">＋</button>
-          <input id="fileInput" type="file" accept="image/*,.pdf,.doc,.docx,.txt,.zip,.mp3,.mp4">
+          <button class="icon-btn" id="attachmentButton" type="button" title="Прикрепить файлы">＋</button>
+          <button class="icon-btn" id="recordButton" type="button" title="Записать голосовое сообщение" aria-label="Записать голосовое сообщение">🎙</button>
+          <input id="fileInput" type="file" multiple accept="image/*,.pdf,.doc,.docx,.txt,.zip,.mp3,.mp4,.webm,.ogg">
           <textarea id="messageInput" rows="1" placeholder="Напиши сообщение..." aria-label="Сообщение"></textarea>
           <button class="icon-btn" id="sendButton" type="button" title="Отправить сообщение">➤</button>
         </div>
         <div id="emojiPicker" class="hidden" style="display:flex;flex-wrap:wrap;gap:5px;padding:8px 2px" aria-label="Выбор эмодзи"></div>
+        <div id="uploadProgressWrap" class="hidden" style="padding:7px 4px 0">
+          <div id="uploadProgressLabel" class="small muted" role="status">Подготовка файлов…</div>
+          <progress id="uploadProgress" max="100" style="width:100%;height:5px"></progress>
+        </div>
+        <div id="recordingStatus" class="small muted hidden" role="status" style="padding:6px 4px 0">Запись голосового сообщения… нажми 🎙 ещё раз для отправки</div>
         <div class="small muted" style="padding:7px 5px 0">Enter — отправить · Shift + Enter — новая строка · Ctrl/⌘ + K — поиск</div>
       </div>
     </section>
@@ -395,6 +407,12 @@ label { display:block; font-size:13px; color:var(--muted); margin-top:17px; }
   </main>
 </div>
 
+<div id="mediaViewer" class="hidden" role="dialog" aria-modal="true" aria-label="Просмотр изображений">
+  <button id="mediaViewerClose" class="icon-btn viewer-close" type="button" aria-label="Закрыть просмотр">×</button>
+  <button id="mediaViewerPrev" class="icon-btn viewer-nav viewer-prev" type="button" aria-label="Предыдущее фото">‹</button>
+  <img id="mediaViewerImage" alt="Просмотр изображения">
+  <button id="mediaViewerNext" class="icon-btn viewer-nav viewer-next" type="button" aria-label="Следующее фото">›</button>
+</div>
 <div id="notice" class="hidden" role="status"></div>
 
 <script>
@@ -1559,7 +1577,12 @@ function renderMessages() {
         const first = cachedUrl(mediaPath);
         if (first) image.src = first;
         else ensureUrl(mediaPath).then(u => { if (u) image.src = u; });
-        image.addEventListener("click", openMedia);
+        image.style.cursor = "zoom-in";
+        image.addEventListener("click", () => {
+          const imageMessages = galleryMessages();
+          const index = imageMessages.findIndex(item => item.id === message.id);
+          showMediaViewer(Math.max(0, index));
+        });
         bubble.appendChild(image);
       } else if ((message.mime_type || "").startsWith("audio/")) {
         const audio = document.createElement("audio");
@@ -2076,59 +2099,195 @@ async function deleteMessage(message) {
 /* Загрузка фото и файлов в Storage */
 $("attachmentButton").addEventListener("click", () => $("fileInput").click());
 
-$("fileInput").addEventListener("change", async event => {
-  const file = event.target.files?.[0];
-  if (!file || !currentUser || !activeChat) {
-    event.target.value = "";
-    return;
-  }
-
-  if (file.size > 25 * 1024 * 1024) {
-    showNotice("Файл слишком большой. Максимальный размер — 25 МБ.");
-    event.target.value = "";
-    return;
-  }
-
-  $("attachmentButton").disabled = true;
-  showNotice("Загружаем файл...", 20000);
-
+async function compressImage(file) {
+  if (!file.type.startsWith("image/") || file.type === "image/gif" || file.size < 600 * 1024) return file;
   try {
-    const safeName = file.name.replace(/[^a-zA-Z0-9._-]/g, "_").slice(-100) || "file";
-    const path = `${currentUser.id}/${activeChat.id}/${Date.now()}_${safeName}`;
+    if (!("createImageBitmap" in window)) return file;
+    const bitmap = await createImageBitmap(file);
+    const scale = Math.min(1, 1600 / Math.max(bitmap.width, bitmap.height));
+    const canvas = document.createElement("canvas");
+    canvas.width = Math.max(1, Math.round(bitmap.width * scale));
+    canvas.height = Math.max(1, Math.round(bitmap.height * scale));
+    const context = canvas.getContext("2d");
+    if (!context) { bitmap.close?.(); return file; }
+    context.drawImage(bitmap, 0, 0, canvas.width, canvas.height);
+    bitmap.close?.();
+    const blob = await new Promise(resolve => canvas.toBlob(resolve, "image/jpeg", 0.82));
+    if (!blob || blob.size >= file.size) return file;
+    const name = file.name.replace(/\.[^.]+$/, "") + ".jpg";
+    return new File([blob], name, {type:"image/jpeg",lastModified:Date.now()});
+  } catch (error) {
+    console.debug("Image compression skipped:", error?.message || error);
+    return file;
+  }
+}
 
-    const {error: uploadError} = await sb.storage.from(MEDIA_BUCKET)
-      .upload(path, file, {upsert:false, contentType:file.type || "application/octet-stream"});
-    if (uploadError) throw uploadError;
+async function uploadOneFile(originalFile, chatId, replyId) {
+  let file = await compressImage(originalFile);
+  if (file.size > 25 * 1024 * 1024) throw new Error(file.name + ": файл больше 25 МБ");
+  const safeName = file.name.replace(/[^a-zA-Z0-9._-]/g, "_").slice(-100) || "file";
+  const path = currentUser.id + "/" + chatId + "/" + Date.now() + "_" + safeName;
+  const {error:uploadError} = await sb.storage.from(MEDIA_BUCKET).upload(path, file, {
+    upsert:false, contentType:file.type || "application/octet-stream"
+  });
+  if (uploadError) throw uploadError;
+  const isImage = file.type.startsWith("image/");
+  const isAudio = file.type.startsWith("audio/");
+  const isVideo = file.type.startsWith("video/");
+  const row = {
+    chat_id:chatId,
+    sender_id:currentUser.id,
+    content:"",
+    message_type:isImage ? "image" : isAudio ? "audio" : isVideo ? "video" : "file",
+    media_path:path,
+    file_name:file.name,
+    mime_type:file.type || null,
+    image_url:null,
+    file_url:null,
+    reply_to_id:replyId || null
+  };
+  const {data:insertedFile,error:insertError} = await sb.from("messages").insert(row).select().single();
+  if (insertError) throw insertError;
+  if (activeChat?.id === chatId) addOrUpdateMessage(insertedFile);
+}
 
-    const isImage = file.type.startsWith("image/");
-
-    const row = {
-      chat_id: activeChat.id,
-      sender_id: currentUser.id,
-      content: "",
-      message_type: isImage ? "image" : "file",
-      media_path: path,
-      file_name: file.name,
-      mime_type: file.type || null,
-      image_url: null,
-      file_url: null,
-      reply_to_id: replyToMessage?.id || null
-    };
-
-    const {data: insertedFile, error: insertError} = await sb.from("messages").insert(row).select().single();
-    if (insertError) throw insertError;
-    addOrUpdateMessage(insertedFile);
-    forceScrollDown();
-
+async function uploadFiles(files) {
+  if (!currentUser || !activeChat || !files?.length) return;
+  const targetChatId = activeChat.id;
+  const replyId = replyToMessage?.id && !String(replyToMessage.id).startsWith("local-") ? replyToMessage.id : null;
+  const fileList = [...files].filter(Boolean);
+  if (fileList.some(file => file.size > 25 * 1024 * 1024)) {
+    showNotice("Один из файлов больше 25 МБ. Уменьши его и попробуй ещё раз.", 5000);
+    return;
+  }
+  $("attachmentButton").disabled = true;
+  $("recordButton").disabled = true;
+  $("uploadProgressWrap").classList.remove("hidden");
+  $("uploadProgress").removeAttribute("value");
+  let succeeded = 0;
+  let failures = [];
+  try {
+    for (let index = 0; index < fileList.length; index++) {
+      $("uploadProgressLabel").textContent = "Загружаем " + (index + 1) + " из " + fileList.length + ": " + fileList[index].name;
+      try {
+        await uploadOneFile(fileList[index], targetChatId, replyId);
+        succeeded++;
+      } catch (error) {
+        failures.push(fileList[index].name + ": " + (error?.message || "ошибка"));
+      }
+      $("uploadProgress").value = Math.round(((index + 1) / fileList.length) * 100);
+    }
+    if (activeChat?.id === targetChatId) forceScrollDown();
+    await loadChatSummaries();
+    renderChatList();
+    if (failures.length) showNotice("Отправлено " + succeeded + " из " + fileList.length + ". Ошибки: " + failures.join("; "), 8000);
+    else showNotice("Отправлено файлов: " + succeeded + " ❤️");
     replyToMessage = null;
     $("replyBar").classList.add("hidden");
-    showNotice("Файл отправлен ❤️");
-  } catch (error) {
-    showNotice("Не удалось отправить файл: " + safeError(error), 7000);
   } finally {
     $("attachmentButton").disabled = false;
-    event.target.value = "";
+    $("recordButton").disabled = false;
+    $("uploadProgressWrap").classList.add("hidden");
+    $("fileInput").value = "";
   }
+}
+
+$("fileInput").addEventListener("change", event => {
+  uploadFiles(event.target.files);
+});
+
+async function toggleVoiceRecording() {
+  if (mediaRecorder && mediaRecorder.state === "recording") {
+    mediaRecorder.stop();
+    return;
+  }
+  if (!navigator.mediaDevices?.getUserMedia || typeof MediaRecorder === "undefined") {
+    showNotice("Запись аудио не поддерживается этим браузером.");
+    return;
+  }
+  try {
+    recordStream = await navigator.mediaDevices.getUserMedia({audio:true});
+    recordedChunks = [];
+    mediaRecorder = new MediaRecorder(recordStream);
+    mediaRecorder.addEventListener("dataavailable", event => {
+      if (event.data?.size) recordedChunks.push(event.data);
+    });
+    mediaRecorder.addEventListener("stop", async () => {
+      const mime = mediaRecorder?.mimeType || recordedChunks[0]?.type || "audio/webm";
+      const extension = mime.includes("mp4") ? "m4a" : mime.includes("ogg") ? "ogg" : "webm";
+      const file = new File(recordedChunks, "voice-" + Date.now() + "." + extension, {type:mime});
+      recordStream?.getTracks().forEach(track => track.stop());
+      recordStream = null;
+      mediaRecorder = null;
+      $("recordingStatus").classList.add("hidden");
+      $("recordButton").textContent = "🎙";
+      if (file.size) await uploadFiles([file]);
+    });
+    mediaRecorder.start();
+    $("recordingStatus").classList.remove("hidden");
+    $("recordButton").textContent = "■";
+    showNotice("Идёт запись. Нажми ■, чтобы отправить голосовое.");
+  } catch (error) {
+    recordStream?.getTracks().forEach(track => track.stop());
+    recordStream = null;
+    showNotice("Не удалось начать запись: " + safeError(error), 6000);
+  }
+}
+$("recordButton").addEventListener("click", toggleVoiceRecording);
+
+function handleDroppedFiles(event) {
+  const files = event.dataTransfer?.files;
+  if (files?.length) {
+    event.preventDefault();
+    uploadFiles(files);
+  }
+}
+["messages", "messageInput"].forEach(id => {
+  const element = $(id);
+  element.addEventListener("dragover", event => {
+    if (event.dataTransfer?.types?.includes("Files")) event.preventDefault();
+  });
+  element.addEventListener("drop", handleDroppedFiles);
+});
+document.addEventListener("paste", event => {
+  const files = [...(event.clipboardData?.items || [])]
+    .filter(item => item.kind === "file")
+    .map(item => item.getAsFile())
+    .filter(Boolean);
+  if (files.length && activeChat) {
+    event.preventDefault();
+    uploadFiles(files);
+  }
+});
+
+function galleryMessages() {
+  return messages.filter(message => message.media_path && (message.message_type === "image" || (message.mime_type || "").startsWith("image/")));
+}
+async function showMediaViewer(index) {
+  const items = galleryMessages();
+  if (!items.length) return;
+  mediaViewerIndex = (index + items.length) % items.length;
+  const message = items[mediaViewerIndex];
+  const url = await ensureUrl(message.media_path);
+  if (!url) { showNotice("Не удалось открыть фото."); return; }
+  $("mediaViewerImage").src = url;
+  $("mediaViewer").classList.remove("hidden");
+  $("mediaViewerPrev").classList.toggle("hidden", items.length < 2);
+  $("mediaViewerNext").classList.toggle("hidden", items.length < 2);
+}
+function closeMediaViewer() {
+  $("mediaViewer").classList.add("hidden");
+  $("mediaViewerImage").removeAttribute("src");
+}
+$("mediaViewerClose").addEventListener("click", closeMediaViewer);
+$("mediaViewer").addEventListener("click", event => { if (event.target === $("mediaViewer")) closeMediaViewer(); });
+$("mediaViewerPrev").addEventListener("click", () => showMediaViewer(mediaViewerIndex - 1));
+$("mediaViewerNext").addEventListener("click", () => showMediaViewer(mediaViewerIndex + 1));
+document.addEventListener("keydown", event => {
+  if ($("mediaViewer").classList.contains("hidden")) return;
+  if (event.key === "Escape") closeMediaViewer();
+  if (event.key === "ArrowLeft") showMediaViewer(mediaViewerIndex - 1);
+  if (event.key === "ArrowRight") showMediaViewer(mediaViewerIndex + 1);
 });
 
 /* Обновление сообщений в реальном времени */
