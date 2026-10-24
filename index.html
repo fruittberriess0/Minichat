@@ -347,6 +347,7 @@ label { display:block; font-size:13px; color:var(--muted); margin-top:17px; }
         </div>
         <button class="icon-btn" id="messageSearchToggle" type="button" title="Поиск по сообщениям" aria-label="Поиск по сообщениям">⌕</button>
         <button class="icon-btn" id="exportChatButton" type="button" title="Экспортировать переписку" aria-label="Экспортировать переписку">⇩</button>
+        <button class="icon-btn hidden" id="groupManageButton" type="button" title="Управление группой" aria-label="Управление группой">👥</button>
         <button class="icon-btn" id="chatStatsButton" type="button" title="Статистика чата" aria-label="Статистика чата">▥</button>
         <button class="icon-btn" id="selectMessagesButton" type="button" title="Выбрать сообщения" aria-label="Выбрать сообщения">☑</button>
         <button class="icon-btn hidden" id="deleteSelectedButton" type="button" title="Удалить выбранные" aria-label="Удалить выбранные">🗑</button>
@@ -373,6 +374,9 @@ label { display:block; font-size:13px; color:var(--muted); margin-top:17px; }
           <button class="icon-btn" id="recordButton" type="button" title="Записать голосовое сообщение" aria-label="Записать голосовое сообщение">🎙</button>
           <input id="fileInput" type="file" multiple accept="image/*,.pdf,.doc,.docx,.txt,.zip,.mp3,.mp4,.webm,.ogg">
           <textarea id="messageInput" rows="1" placeholder="Напиши сообщение..." aria-label="Сообщение"></textarea>
+          <select id="messageExpirySelect" class="field" title="Срок жизни сообщения" aria-label="Срок жизни сообщения" style="width:auto;max-width:94px;padding:6px 3px;font-size:11px;flex-shrink:0">
+            <option value="0">Навсегда</option><option value="3600">1 час</option><option value="86400">1 день</option><option value="604800">7 дней</option>
+          </select>
           <button class="icon-btn" id="sendButton" type="button" title="Отправить сообщение">➤</button>
         </div>
         <div id="emojiPicker" class="hidden" style="display:flex;flex-wrap:wrap;gap:5px;padding:8px 2px" aria-label="Выбор эмодзи"></div>
