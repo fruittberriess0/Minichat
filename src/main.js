@@ -16,6 +16,7 @@ let unreadWhileAway = 0;
 let soundEnabled = true;
 let currentLanguage = "ru";
 let currentChatMuted = false;
+let currentExpirySeconds = 0;
 let isPasswordRecovery = new URLSearchParams(location.search).get("resetPassword") === "1";
 let selectionMode = false;
 let selectedMessageIds = new Set();
@@ -70,7 +71,7 @@ function startPresenceUpdates() {
   }
 
   updateMyLastSeen();
-  presenceTimer = setInterval(updateMyLastSeen, 30000);
+  presenceTimer = setInterval(updateMyLastSeen, 300000);
   document.addEventListener("visibilitychange", handlePresenceVisibility);
 
   if (!currentUser) return;
@@ -252,7 +253,18 @@ $("fontSizeRange").addEventListener("input", event => {
   document.documentElement.style.setProperty("--message-font-size", value + "px");
   try { localStorage.setItem("minichat-font-size", value); } catch {}
 });
-$("wallpaperSelect").addEventListener("change", event => applyWallpaper(event.target.value));
+$("wallpaperSelect").addEventListener("change", async event => {
+  applyWallpaper(event.target.value);
+  if (activeChat) {
+    try { await saveChatPreferences(); }
+    catch (error) { showNotice("Не удалось сохранить обои чата: " + safeError(error), 6000); }
+  }
+});
+$("messageExpirySelect").addEventListener("change", async event => {
+  currentExpirySeconds = Math.max(0, Number(event.target.value) || 0);
+  try { await saveChatPreferences(); }
+  catch (error) { showNotice("Срок жизни сообщений требует миграции Supabase: " + safeError(error), 6000); }
+});
 $("languageSelect").addEventListener("change", event => { currentLanguage = event.target.value; applyLanguage(); });
 $("soundToggle").addEventListener("change", event => {
   soundEnabled = event.target.checked;
@@ -260,13 +272,14 @@ $("soundToggle").addEventListener("change", event => {
 });
 $("muteChatToggle").addEventListener("change", async event => {
   if (!activeChat || !currentUser) { event.target.checked = false; showNotice("Сначала открой чат."); return; }
+  const previous = currentChatMuted;
+  currentChatMuted = event.target.checked;
   try {
-    const {error} = await sb.from("chat_preferences").upsert({
-      user_id:currentUser.id, chat_id:activeChat.id, muted:event.target.checked
-    }, {onConflict:"user_id,chat_id"});
-    if (error) throw error;
+    await saveChatPreferences();
     showNotice(event.target.checked ? "Уведомления этого чата выключены." : "Уведомления этого чата включены.");
   } catch (error) {
+    currentChatMuted = previous;
+    event.target.checked = previous;
     showNotice("Настройки чата требуют миграции Supabase: " + (error?.message || "ошибка"), 6000);
   }
 });
@@ -1024,10 +1037,12 @@ $("refreshButton").addEventListener("click", async () => {
 /* Открытие чата и сообщения */
 async function loadChatPreference(chatId) {
   currentChatMuted = false;
+  currentExpirySeconds = 0;
   $("muteChatToggle").checked = false;
+  $("messageExpirySelect").value = "0";
   if (!currentUser || !chatId) return;
   try {
-    const {data, error} = await sb.from("chat_preferences").select("muted,wallpaper")
+    const {data, error} = await sb.from("chat_preferences").select("muted,wallpaper,message_expiry_seconds")
       .eq("user_id",currentUser.id).eq("chat_id",chatId).maybeSingle();
     if (error) throw error;
     currentChatMuted = Boolean(data?.muted);
@@ -1036,9 +1051,23 @@ async function loadChatPreference(chatId) {
       $("wallpaperSelect").value = data.wallpaper;
       applyWallpaper(data.wallpaper);
     }
+    currentExpirySeconds = Math.max(0, Number(data?.message_expiry_seconds) || 0);
+    $("messageExpirySelect").value = String(currentExpirySeconds);
   } catch (error) {
     console.debug("Per-chat settings need the optional migration:", error?.message || error);
   }
+}
+
+async function saveChatPreferences() {
+  if (!currentUser || !activeChat) return;
+  const row = {
+    user_id:currentUser.id, chat_id:activeChat.id, muted:currentChatMuted,
+    wallpaper:$("wallpaperSelect").value || "dots",
+    message_expiry_seconds:Math.max(0, Number($("messageExpirySelect").value) || 0),
+    updated_at:new Date().toISOString()
+  };
+  const {error} = await sb.from("chat_preferences").upsert(row,{onConflict:"user_id,chat_id"});
+  if (error) throw error;
 }
 
 async function openChat(chat) {
@@ -1049,7 +1078,8 @@ async function openChat(chat) {
   $("conversation").classList.remove("hidden");
   $("profilePanel").classList.add("hidden");
   $("headerTitle").textContent = chatTitle(chat);
-  $("headerStatus").textContent = "Личная переписка";
+  $("headerStatus").textContent = chat.is_group ? "Групповой чат" : "Личная переписка";
+  $("groupManageButton").classList.toggle("hidden", !chat.is_group);
   $("headerAvatar").textContent = chat.is_group ? "👥" : "♥";
   $("messages").innerHTML = '<div class="empty-chat">Загружаем сообщения...</div>';
   setMobileChatMode(true);
@@ -1177,13 +1207,14 @@ function renderMessages() {
     return;
   }
 
+  const unexpiredMessages = messages.filter(message => !message.expires_at || new Date(message.expires_at).getTime() > Date.now());
   const visibleMessages = messageSearchTerm
-    ? messages.filter(message => {
+    ? unexpiredMessages.filter(message => {
         const author = profilesById[message.sender_id]?.username || "";
         const text = [message.content, message.file_name, author].join(" ").toLocaleLowerCase("ru");
         return text.includes(messageSearchTerm);
       })
-    : messages;
+    : unexpiredMessages;
   if (messageSearchTerm) {
     $("messageSearchCount").textContent = visibleMessages.length
       ? "Найдено сообщений: " + visibleMessages.length
@@ -1728,7 +1759,8 @@ async function sendMessage() {
     sender_id: currentUser.id,
     content,
     message_type: "text",
-    reply_to_id: replyToMessage?.id || null
+    reply_to_id: replyToMessage?.id || null,
+    expires_at: currentExpirySeconds ? new Date(Date.now() + currentExpirySeconds * 1000).toISOString() : null
   };
   const pending = {
     id:"local-" + Date.now() + "-" + Math.floor(Math.random() * 1000000),
@@ -1737,6 +1769,7 @@ async function sendMessage() {
     content,
     message_type:"text",
     reply_to_id:row.reply_to_id,
+    expires_at:row.expires_at,
     created_at:new Date().toISOString(),
     __pending:true,
     __payload:row
@@ -1899,7 +1932,8 @@ async function uploadOneFile(originalFile, chatId, replyId) {
     mime_type:file.type || null,
     image_url:null,
     file_url:null,
-    reply_to_id:replyId || null
+    reply_to_id:replyId || null,
+    expires_at:currentExpirySeconds ? new Date(Date.now() + currentExpirySeconds * 1000).toISOString() : null
   };
   const {data:insertedFile,error:insertError} = await sb.from("messages").insert(row).select().single();
   if (insertError) throw insertError;
@@ -2134,6 +2168,64 @@ $("selectMessagesButton").addEventListener("click", () => {
 });
 $("deleteSelectedButton").addEventListener("click", deleteSelectedMessages);
 
+async function manageGroup() {
+  if (!activeChat?.is_group || !currentUser) return;
+  const chatId = activeChat.id;
+  const action = prompt("Управление группой:\\n1 — добавить участника\\n2 — изменить роль\\n3 — удалить участника\\n4 — переименовать группу", "1");
+  if (!action) return;
+  try {
+    if (action === "1") {
+      const query = prompt("Email или точное имя нового участника:");
+      if (!query?.trim()) return;
+      const {data:users,error:userError} = await sb.rpc("find_chat_user",{p_query:query.trim()});
+      if (userError) throw userError;
+      const found = users?.[0];
+      if (!found?.user_id) throw new Error("Пользователь не найден");
+      const {error} = await sb.rpc("add_chat_member",{p_chat_id:chatId,p_user_id:found.user_id});
+      if (error) throw error;
+      showNotice("Участник добавлен.");
+    } else if (action === "2" || action === "3") {
+      const {data:members,error} = await sb.from("chat_members").select("user_id,role").eq("chat_id",chatId);
+      if (error) throw error;
+      const choices = (members || []).filter(item => item.user_id !== currentUser.id && item.role !== "owner");
+      if (!choices.length) { showNotice("Нет участников, которых можно изменить."); return; }
+      const labels = choices.map((item,index) => {
+        const profile = profilesById[item.user_id];
+        return (index+1)+". "+(profile?.username || item.user_id.slice(0,8))+" ["+item.role+"]";
+      }).join("\\n");
+      const choice = prompt("Выбери участника:\\n"+labels,"1");
+      if (choice === null) return;
+      const member = choices[Number(choice)-1];
+      if (!member) { showNotice("Неверный номер."); return; }
+      if (action === "2") {
+        const role = prompt("Роль: admin или member","member");
+        if (!["admin","member"].includes(role)) { showNotice("Роль должна быть admin или member."); return; }
+        const {error:roleError} = await sb.rpc("update_chat_member_role",{p_chat_id:chatId,p_user_id:member.user_id,p_role:role});
+        if (roleError) throw roleError;
+        showNotice("Роль участника обновлена.");
+      } else {
+        if (!confirm("Удалить участника из группы?")) return;
+        const {error:removeError} = await sb.rpc("remove_chat_member",{p_chat_id:chatId,p_user_id:member.user_id});
+        if (removeError) throw removeError;
+        showNotice("Участник удалён.");
+      }
+    } else if (action === "4") {
+      const title = prompt("Новое название группы:",chatTitle(activeChat));
+      if (!title?.trim()) return;
+      const {error} = await sb.rpc("rename_chat",{p_chat_id:chatId,p_title:title.trim()});
+      if (error) throw error;
+      activeChat.title = title.trim();
+      await loadChats();
+      $("headerTitle").textContent = chatTitle(activeChat);
+      showNotice("Название группы изменено.");
+    }
+    await loadMembers();
+  } catch (error) {
+    showNotice("Управление группой требует миграции Supabase или прав администратора: "+safeError(error),7000);
+  }
+}
+$("groupManageButton").addEventListener("click",manageGroup);
+
 async function createChatFromPrompt() {
   if (!currentUser) return;
   const group = confirm("Создать группу? Нажми «Отмена», если нужен личный чат.");
@@ -2247,7 +2339,7 @@ function updateSelectionControls() {
 function updatePinnedBanner() {
   const banner = $("pinnedBanner");
   if (!banner) return;
-  const pinned = messages.find(message => message.is_pinned);
+  const pinned = messages.find(message => message.is_pinned && (!message.expires_at || new Date(message.expires_at).getTime() > Date.now()));
   banner.classList.toggle("hidden", !pinned);
   $("pinnedBannerText").textContent = pinned ? (pinned.content || pinned.file_name || "Закреплено вложение") : "Закреплённое сообщение";
 }
