@@ -62,7 +62,7 @@ export function initSharedSpace({sb,$,getCurrentUser,getActiveChat,showNotice,sa
       const pollIds = currentItems.filter(item => item.item_type === "poll").map(item => item.id);
       if (pollIds.length) {
         const {data:votes,error:votesError} = await sb.from("shared_item_votes")
-          .select("item_id,user_id,option_index").in("item_id",pollIds);
+          .select("id,item_id,user_id,option_index").in("item_id",pollIds);
         if (votesError) throw votesError;
         currentVotes = votes || [];
       } else currentVotes = [];
@@ -92,13 +92,10 @@ export function initSharedSpace({sb,$,getCurrentUser,getActiveChat,showNotice,sa
       title.textContent = item.title;
       titleGroup.append(type,title);
       top.appendChild(titleGroup);
-      if (item.created_by === user?.id || item.is_done) {
-        const action = item.item_type === "task"
-          ? makeButton(item.is_done ? "✓ Выполнено" : "Отметить", () => toggleTask(item), "btn secondary small-btn")
-          : (item.created_by === user?.id
-            ? makeButton("Удалить", () => removeItem(item), "btn secondary small-btn")
-            : null);
-        if (action) top.appendChild(action);
+      if (item.item_type === "task") {
+        top.appendChild(makeButton(item.is_done ? "✓ Выполнено" : "Отметить", () => toggleTask(item), "btn secondary small-btn"));
+      } else if (item.created_by === user?.id) {
+        top.appendChild(makeButton("Удалить", () => removeItem(item), "btn secondary small-btn"));
       }
       card.appendChild(top);
 
