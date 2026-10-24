@@ -21,6 +21,8 @@ let selectionMode = false;
 let selectedMessageIds = new Set();
 let editingMessageId = null;
 let editingDraft = "";
+let appLockTimer = null;
+const APP_PIN_KEY = "minichat-local-pin-v1";
 
 let presenceTimer = null;
 let presenceChannel = null;
@@ -98,6 +100,7 @@ function handlePresenceVisibility() {
     if (typeof markMessagesAsRead === "function") markMessagesAsRead();
     lastSeenSaveTime = 0;
     updateMyLastSeen();
+    armAppLockTimer();
     if (presenceChannel && currentUser) {
       presenceChannel.track({
         user_id: currentUser.id,
@@ -105,12 +108,16 @@ function handlePresenceVisibility() {
         visible: true
       }).catch(error => console.debug("Presence update skipped:", error?.message || error));
     }
-  } else if (presenceChannel && currentUser) {
-    presenceChannel.track({
-      user_id: currentUser.id,
-      online_at: new Date().toISOString(),
-      visible: false
-    }).catch(error => console.debug("Presence update skipped:", error?.message || error));
+  } else {
+    if (appLockTimer) clearTimeout(appLockTimer);
+    appLockTimer = setTimeout(lockAppIfConfigured, 5 * 60 * 1000);
+    if (presenceChannel && currentUser) {
+      presenceChannel.track({
+        user_id: currentUser.id,
+        online_at: new Date().toISOString(),
+        visible: false
+      }).catch(error => console.debug("Presence update skipped:", error?.message || error));
+    }
   }
 }
 
@@ -469,6 +476,77 @@ function setLoggedIn(isLoggedIn) {
   $("loginScreen").classList.toggle("hidden", isLoggedIn);
   $("app").classList.toggle("hidden", !isLoggedIn);
 }
+function toBase64(bytes) {
+  return btoa(String.fromCharCode(...bytes));
+}
+function fromBase64(value) {
+  return Uint8Array.from(atob(value), char => char.charCodeAt(0));
+}
+async function hashAppPin(pin, salt) {
+  const key = await crypto.subtle.importKey("raw", new TextEncoder().encode(pin), "PBKDF2", false, ["deriveBits"]);
+  const bits = await crypto.subtle.deriveBits({name:"PBKDF2",salt,iterations:120000,hash:"SHA-256"},key,256);
+  return new Uint8Array(bits);
+}
+async function setOrRemoveAppPin() {
+  let current = null;
+  try { current = JSON.parse(localStorage.getItem(APP_PIN_KEY) || "null"); } catch {}
+  if (current && confirm("Удалить существующий PIN-код?")) {
+    localStorage.removeItem(APP_PIN_KEY);
+    if (appLockTimer) clearTimeout(appLockTimer);
+    showNotice("Локальная блокировка PIN удалена.");
+    return;
+  }
+  const first = prompt("Создай PIN из 4–12 цифр:");
+  if (first === null) return;
+  if (!/^\d{4,12}$/.test(first)) { showNotice("PIN должен содержать от 4 до 12 цифр."); return; }
+  const second = prompt("Повтори PIN:");
+  if (first !== second) { showNotice("PIN-коды не совпадают."); return; }
+  const salt = crypto.getRandomValues(new Uint8Array(16));
+  const hash = await hashAppPin(first, salt);
+  localStorage.setItem(APP_PIN_KEY, JSON.stringify({salt:toBase64(salt),hash:toBase64(hash)}));
+  armAppLockTimer();
+  showNotice("PIN настроен. Приложение будет блокироваться после 5 минут в фоне.");
+}
+async function unlockApp() {
+  const raw = localStorage.getItem(APP_PIN_KEY);
+  if (!raw) { $("appLockScreen").classList.add("hidden"); setLoggedIn(true); return; }
+  try {
+    const saved = JSON.parse(raw);
+    const candidate = await hashAppPin($("appPinInput").value, fromBase64(saved.salt));
+    const expected = fromBase64(saved.hash);
+    let diff = candidate.length ^ expected.length;
+    for (let i=0;i<Math.min(candidate.length,expected.length);i++) diff |= candidate[i] ^ expected[i];
+    if (diff !== 0) {
+      $("appLockStatus").textContent = "Неверный PIN.";
+      $("appPinInput").value = "";
+      return;
+    }
+    $("appLockStatus").textContent = "";
+    $("appPinInput").value = "";
+    $("appLockScreen").classList.add("hidden");
+    setLoggedIn(true);
+    armAppLockTimer();
+  } catch (error) {
+    $("appLockStatus").textContent = "Не удалось проверить PIN.";
+  }
+}
+function lockAppIfConfigured() {
+  if (!localStorage.getItem(APP_PIN_KEY) || !currentUser) return;
+  $("app").classList.add("hidden");
+  $("loginScreen").classList.add("hidden");
+  $("appLockScreen").classList.remove("hidden");
+  $("appPinInput").focus();
+}
+function armAppLockTimer() {
+  if (appLockTimer) clearTimeout(appLockTimer);
+  if (!localStorage.getItem(APP_PIN_KEY)) return;
+  appLockTimer = setTimeout(lockAppIfConfigured, 5 * 60 * 1000);
+}
+$("setPinButton").addEventListener("click", setOrRemoveAppPin);
+$("unlockAppButton").addEventListener("click", unlockApp);
+$("appPinInput").addEventListener("keydown", event => {
+  if (event.key === "Enter") unlockApp();
+});
 
 function setMobileChatMode(inChat) {
   $("app").classList.toggle("mobile-chat", Boolean(inChat));
@@ -577,6 +655,7 @@ async function initializeUser(user) {
   try {
     await loadProfile();
     await loadChats();
+    lockAppIfConfigured();
   } catch (error) {
     showNotice("Не удалось загрузить данные: " + safeError(error), 6000);
   }
@@ -625,6 +704,12 @@ async function logout() {
   }
 }
 $("logoutButton").addEventListener("click", logout);
+$("signOutAllButton").addEventListener("click", async () => {
+  if (!confirm("Выйти из MiniChat на всех устройствах?")) return;
+  const {error} = await sb.auth.signOut({scope:"global"});
+  if (error) showNotice("Не удалось завершить все сессии: " + safeError(error), 6000);
+  else showNotice("Все сессии завершены.");
+});
 
 /* Профиль пользователя */
 async function loadProfile() {
