@@ -93,6 +93,8 @@
         </div>
         <button class="icon-btn" id="messageSearchToggle" type="button" title="Поиск по сообщениям" aria-label="Поиск по сообщениям">⌕</button>
         <button class="icon-btn" id="exportChatButton" type="button" title="Экспортировать переписку" aria-label="Экспортировать переписку">⇩</button>
+        <button class="icon-btn" id="callAudioButton" type="button" title="Голосовой звонок" aria-label="Голосовой звонок">☎</button>
+        <button class="icon-btn" id="callVideoButton" type="button" title="Видеозвонок" aria-label="Видеозвонок">▣</button>
         <button class="icon-btn" id="sharedAlbumButton" type="button" title="Общий альбом" aria-label="Общий альбом">🖼</button>
         <button class="icon-btn" id="sharedSpaceButton" type="button" title="Общие задачи, даты и опросы" aria-label="Общее пространство">♥+</button>
         <button class="icon-btn hidden" id="groupManageButton" type="button" title="Управление группой" aria-label="Управление группой">👥</button>
@@ -186,6 +188,26 @@
   </main>
 </div>
 
+<section id="callPanel" class="call-panel hidden" role="dialog" aria-modal="true" aria-labelledby="callTitle">
+  <div class="call-card">
+    <h2 id="callTitle">Звонок MiniChat</h2>
+    <p id="callStatus" class="muted" role="status">Подключение…</p>
+    <div class="call-media">
+      <video id="remoteCallVideo" autoplay playsinline></video>
+      <video id="localCallVideo" autoplay playsinline muted></video>
+      <audio id="remoteCallAudio" autoplay></audio>
+    </div>
+    <div id="incomingCallActions" class="call-actions hidden">
+      <button id="acceptCallButton" class="btn" type="button">Ответить</button>
+      <button id="declineCallButton" class="btn secondary" type="button">Отклонить</button>
+    </div>
+    <div id="activeCallActions" class="call-actions hidden">
+      <button id="muteCallButton" class="btn secondary" type="button">Выключить микрофон</button>
+      <button id="cameraCallButton" class="btn secondary" type="button">Выключить камеру</button>
+      <button id="hangupCallButton" class="btn" type="button">Завершить звонок</button>
+    </div>
+  </div>
+</section>
 <section id="sharedSpacePanel" class="shared-space-panel hidden" role="dialog" aria-modal="true" aria-labelledby="sharedSpaceTitle">
   <div class="shared-space-card">
     <header class="shared-space-header">
