@@ -1402,8 +1402,6 @@ function renderMessages() {
   if (shouldScroll) {
     container.scrollTop = container.scrollHeight;
     unreadWhileAway = 0;
-  } else if (activeChat && messages.length && messages[messages.length - 1]?.sender_id !== currentUser?.id) {
-    unreadWhileAway += 1;
   }
   updateScrollButton();
 }
@@ -1694,6 +1692,11 @@ function subscribeToMessages() {
         messages = messages.filter(m => m.id !== payload.old.id);
         renderMessages();
         return;
+      }
+      if (payload.eventType === "INSERT" && payload.new.sender_id !== currentUser?.id) {
+        const messageBox = $("messages");
+        const distance = messageBox.scrollHeight - messageBox.scrollTop - messageBox.clientHeight;
+        if (distance > 180) unreadWhileAway += 1;
       }
       addOrUpdateMessage(payload.new);
       if (payload.eventType === "INSERT") {
