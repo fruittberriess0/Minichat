@@ -38,6 +38,7 @@
 html { color-scheme:dark; }
 html[data-theme="light"] { color-scheme:light; }
 body { transition:background .18s,color .18s; }
+.message-row.message-highlight .message-bubble { outline:2px solid var(--accent); box-shadow:0 0 0 5px #40d6bf22; }
 .message-bubble { border:1px solid #ffffff08; }
 :root[data-theme="light"] .message-bubble { border-color:#dce5ed; }
 :root[data-theme="light"] .message-row.own .message-bubble { color:#173c38; }
@@ -1283,6 +1284,7 @@ function renderMessages() {
     const own = message.sender_id === currentUser?.id;
     const row = document.createElement("div");
     row.className = "message-row " + (own ? "own" : "other");
+    row.dataset.messageId = String(message.id);
 
     const bubble = document.createElement("div");
     bubble.className = "message-bubble";
@@ -1366,6 +1368,9 @@ function renderMessages() {
         const reply = document.createElement("div");
         reply.style.cssText = "border-left:2px solid #9ef2e1;padding-left:8px;margin-bottom:8px;font-size:11px;color:#c0d8d8";
         reply.textContent = "↪ " + (replied.content || replied.file_name || "Сообщение");
+        reply.style.cursor = "pointer";
+        reply.title = "Перейти к исходному сообщению";
+        reply.addEventListener("click", () => jumpToMessage(replied.id));
         bubble.insertBefore(reply, bubble.firstChild);
       }
     }
@@ -1470,6 +1475,18 @@ function forceScrollDown() {
   c.scrollTop = c.scrollHeight;
   unreadWhileAway = 0;
   updateScrollButton();
+}
+
+function jumpToMessage(messageId) {
+  const target = [...document.querySelectorAll("#messages .message-row")]
+    .find(el => el.dataset.messageId === String(messageId));
+  if (!target) {
+    showNotice("Это сообщение не загружено. Прокрути историю выше и попробуй снова.");
+    return;
+  }
+  target.scrollIntoView({behavior:"smooth", block:"center"});
+  target.classList.add("message-highlight");
+  setTimeout(() => target.classList.remove("message-highlight"), 1800);
 }
 
 function updateScrollButton() {
