@@ -426,6 +426,8 @@ let soundEnabled = true;
 let currentLanguage = "ru";
 let currentChatMuted = false;
 let isPasswordRecovery = new URLSearchParams(location.search).get("resetPassword") === "1";
+let editingMessageId = null;
+let editingDraft = "";
 
 let presenceTimer = null;
 let presenceChannel = null;
@@ -1353,6 +1355,7 @@ async function loadMessages() {
     lastRenderedChatId = chatId;
     renderMessages();
     forceScrollDown();
+    await refreshReactions();
   } catch (error) {
     $("messages").innerHTML = '<div class="empty-chat">Не удалось загрузить сообщения.<br>' +
       escapeHtml(safeError(error)) + '</div>';
@@ -1494,10 +1497,51 @@ function renderMessages() {
     }
 
     if (message.content) {
-      const text = document.createElement("div");
-      text.className = "message-text";
-      text.textContent = message.content;
-      bubble.appendChild(text);
+      if (own && editingMessageId === message.id) {
+        const editor = document.createElement("textarea");
+        editor.className = "field";
+        editor.value = editingDraft;
+        editor.rows = 3;
+        editor.maxLength = 10000;
+        editor.style.cssText = "display:block;width:100%;min-width:220px;resize:vertical;margin:5px 0";
+        editor.setAttribute("aria-label", "Редактирование сообщения");
+        editor.addEventListener("input", () => editingDraft = editor.value);
+        editor.addEventListener("keydown", event => {
+          if ((event.ctrlKey || event.metaKey) && event.key === "Enter") {
+            event.preventDefault();
+            saveInlineEdit(message);
+          }
+          if (event.key === "Escape") {
+            editingMessageId = null;
+            editingDraft = "";
+            renderMessages();
+          }
+        });
+        const editorActions = document.createElement("div");
+        editorActions.style.cssText = "display:flex;gap:6px;margin-top:6px";
+        const saveEdit = document.createElement("button");
+        saveEdit.type = "button";
+        saveEdit.className = "btn small-btn";
+        saveEdit.textContent = "Сохранить";
+        saveEdit.addEventListener("click", () => saveInlineEdit(message));
+        const cancelEdit = document.createElement("button");
+        cancelEdit.type = "button";
+        cancelEdit.className = "btn secondary small-btn";
+        cancelEdit.textContent = "Отмена";
+        cancelEdit.addEventListener("click", () => {
+          editingMessageId = null;
+          editingDraft = "";
+          renderMessages();
+        });
+        editorActions.append(saveEdit, cancelEdit);
+        bubble.append(editor, editorActions);
+        queueMicrotask(() => editor.focus());
+      } else {
+        const text = document.createElement("div");
+        text.className = "message-text";
+        appendFormattedText(text, message.content);
+        bubble.appendChild(text);
+      }
     }
 
     const mediaPath = message.media_path || "";
@@ -1591,16 +1635,65 @@ function renderMessages() {
     time.textContent = formatTime(message.created_at);
     footer.appendChild(time);
 
-    if (own && message.read_at) {
+    if (own && message.__pending) {
+      const sendingLabel = document.createElement("span");
+      sendingLabel.textContent = "Отправляется…";
+      sendingLabel.title = "Сообщение ещё отправляется";
+      footer.appendChild(sendingLabel);
+    } else if (own && message.__failed) {
+      const failedLabel = document.createElement("span");
+      failedLabel.textContent = "Не отправлено";
+      failedLabel.title = message.__error || "Ошибка отправки";
+      failedLabel.style.color = "var(--danger)";
+      footer.appendChild(failedLabel);
+    } else if (own && message.read_at) {
       const read = document.createElement("span");
       read.textContent = "✓✓";
       read.title = "Прочитано";
       footer.appendChild(read);
+    } else if (own && message.id && !String(message.id).startsWith("local-")) {
+      const sent = document.createElement("span");
+      sent.textContent = "✓";
+      sent.title = "Отправлено";
+      footer.appendChild(sent);
     }
     bubble.appendChild(footer);
 
     const actions = document.createElement("div");
     actions.style.cssText = "display:flex;gap:5px;justify-content:flex-end;margin-top:5px";
+
+    if (own && message.__failed) {
+      const retryBtn = document.createElement("button");
+      retryBtn.type = "button";
+      retryBtn.className = "icon-btn";
+      retryBtn.style.cssText = "width:28px;height:26px;font-size:12px;color:var(--danger)";
+      retryBtn.title = "Повторить отправку";
+      retryBtn.textContent = "↻";
+      retryBtn.addEventListener("click", () => retryFailedMessage(message));
+      actions.appendChild(retryBtn);
+    }
+
+    if (!message.__pending && !message.__failed) {
+    ["❤️","👍","😂"].forEach(reaction => {
+      const reactBtn = document.createElement("button");
+      reactBtn.type = "button";
+      reactBtn.className = "icon-btn";
+      reactBtn.style.cssText = "width:28px;height:26px;font-size:12px";
+      const state = reactionsByMessage[message.id] || {counts:{},mine:[]};
+      reactBtn.textContent = reaction + (state.counts[reaction] ? String(state.counts[reaction]) : "");
+      reactBtn.title = "Реакция " + reaction;
+      if (state.mine.includes(reaction)) reactBtn.style.background = "var(--accent)";
+      reactBtn.addEventListener("click", () => toggleReaction(message, reaction));
+      actions.appendChild(reactBtn);
+    });
+    const forwardBtn = document.createElement("button");
+    forwardBtn.type = "button";
+    forwardBtn.className = "icon-btn";
+    forwardBtn.style.cssText = "width:28px;height:26px;font-size:12px";
+    forwardBtn.title = "Переслать";
+    forwardBtn.textContent = "↗";
+    forwardBtn.addEventListener("click", () => forwardMessage(message));
+    actions.appendChild(forwardBtn);
 
     const replyBtn = document.createElement("button");
     replyBtn.type = "button";
@@ -1641,6 +1734,7 @@ function renderMessages() {
     }
 
 
+    }
     bubble.appendChild(actions);
     row.appendChild(bubble);
     container.appendChild(row);
@@ -1665,6 +1759,100 @@ function addOrUpdateMessage(msg) {
     messages.sort((a, b) => new Date(a.created_at) - new Date(b.created_at));
   }
   renderMessages();
+}
+
+function appendFormattedText(container, value) {
+  // Safe Markdown subset: normal text, links, bold, italic and inline code.
+  const source = String(value ?? "");
+  const tokenPattern = /(https?:\/\/[^\s<]+|\*\*[^*]+\*\*|\*[^*\n]+\*|\x60[^\x60\n]+\x60)/g;
+  let last = 0, match;
+  while ((match = tokenPattern.exec(source))) {
+    if (match.index > last) container.appendChild(document.createTextNode(source.slice(last, match.index)));
+    const token = match[0];
+    if (/^https?:\/\//i.test(token)) {
+      const link = document.createElement("a");
+      link.href = token;
+      link.target = "_blank";
+      link.rel = "noopener noreferrer";
+      link.textContent = token;
+      link.className = "message-link";
+      container.appendChild(link);
+    } else {
+      const element = token.startsWith("**") ? document.createElement("strong")
+        : token.startsWith("*") ? document.createElement("em")
+        : document.createElement("code");
+      element.textContent = token.startsWith("**") ? token.slice(2,-2) : token.slice(1,-1);
+      container.appendChild(element);
+    }
+    last = tokenPattern.lastIndex;
+  }
+  if (last < source.length) container.appendChild(document.createTextNode(source.slice(last)));
+}
+
+async function refreshReactions() {
+  const ids = messages.filter(m => m.id && !String(m.id).startsWith("local-")).map(m => m.id);
+  if (!ids.length) { reactionsByMessage = {}; return; }
+  try {
+    const {data, error} = await sb.from("message_reactions").select("id,message_id,user_id,reaction").in("message_id", ids);
+    if (error) throw error;
+    const next = {};
+    (data || []).forEach(row => {
+      if (!next[row.message_id]) next[row.message_id] = {counts:{},mine:[]};
+      next[row.message_id].counts[row.reaction] = (next[row.message_id].counts[row.reaction] || 0) + 1;
+      if (row.user_id === currentUser?.id) next[row.message_id].mine.push(row.reaction);
+    });
+    reactionsByMessage = next;
+    renderMessages();
+  } catch (error) {
+    console.debug("Reactions need the optional Supabase migration:", error?.message || error);
+  }
+}
+
+async function toggleReaction(message, reaction) {
+  if (!message?.id || String(message.id).startsWith("local-")) return;
+  try {
+    const {data: existing, error: findError} = await sb.from("message_reactions")
+      .select("id").eq("message_id", message.id).eq("user_id", currentUser.id).eq("reaction", reaction).maybeSingle();
+    if (findError) throw findError;
+    if (existing) {
+      const {error} = await sb.from("message_reactions").delete().eq("id", existing.id).eq("user_id", currentUser.id);
+      if (error) throw error;
+    } else {
+      const {error} = await sb.from("message_reactions").insert({message_id:message.id,user_id:currentUser.id,reaction});
+      if (error) throw error;
+    }
+    await refreshReactions();
+  } catch (error) {
+    showNotice("Реакции заработают после применения миграции Supabase: " + (error?.message || "ошибка"), 6000);
+  }
+}
+
+async function forwardMessage(message) {
+  if (!currentUser || !message || chats.length < 2) {
+    showNotice("Для пересылки нужен другой доступный чат.");
+    return;
+  }
+  const targets = chats.filter(chat => chat.id !== activeChat?.id);
+  const promptText = targets.map((chat,index) => (index + 1) + ". " + chatTitle(chat)).join("\n");
+  const choice = prompt("Куда переслать? Введи номер чата:\n" + promptText, "1");
+  if (choice === null) return;
+  const target = targets[Number(choice) - 1];
+  if (!target) { showNotice("Номер чата не найден."); return; }
+  try {
+    const row = {
+      chat_id:target.id,
+      sender_id:currentUser.id,
+      content:message.content || (message.file_name ? "Пересланный файл: " + message.file_name : "Пересланное сообщение"),
+      message_type:"text"
+    };
+    const {error} = await sb.from("messages").insert(row);
+    if (error) throw error;
+    showNotice("Сообщение переслано ❤️");
+    await loadChatSummaries();
+    renderChatList();
+  } catch (error) {
+    showNotice("Не удалось переслать: " + safeError(error), 6000);
+  }
 }
 
 function forceScrollDown() {
@@ -1720,41 +1908,76 @@ $("cancelReplyButton").addEventListener("click", () => {
   $("replyBar").classList.add("hidden");
 });
 
+async function persistPendingMessage(pending) {
+  if (!pending || !pending.__payload || !currentUser) return false;
+  pending.__pending = true;
+  pending.__failed = false;
+  pending.__error = "";
+  renderMessages();
+  try {
+    const {data: inserted, error} = await sb.from("messages").insert(pending.__payload).select().single();
+    if (error) throw error;
+    messages = messages.filter(item => item.id !== pending.id);
+    if (activeChat?.id === pending.chat_id) addOrUpdateMessage(inserted);
+    loadChatSummaries().then(renderChatList).catch(error => console.debug("Chat summary refresh skipped:", error?.message || error));
+    return true;
+  } catch (error) {
+    pending.__pending = false;
+    pending.__failed = true;
+    pending.__error = safeError(error);
+    renderMessages();
+    showNotice("Не удалось отправить сообщение. Нажми ↻ рядом с ним, чтобы повторить.", 6000);
+    return false;
+  }
+}
+
+async function retryFailedMessage(message) {
+  if (!message?.__failed || sending) return;
+  sending = true;
+  await persistPendingMessage(message);
+  sending = false;
+}
+
 async function sendMessage() {
   if (!currentUser || !activeChat || sending) return;
   const input = $("messageInput");
   const content = input.value.trim();
   if (!content) return;
 
-  sending = true;
-  $("sendButton").disabled = true;
-
+  const chatIdAtSend = activeChat.id;
   const row = {
-    chat_id: activeChat.id,
+    chat_id: chatIdAtSend,
     sender_id: currentUser.id,
     content,
     message_type: "text",
     reply_to_id: replyToMessage?.id || null
   };
+  const pending = {
+    id:"local-" + Date.now() + "-" + Math.floor(Math.random() * 1000000),
+    chat_id:chatIdAtSend,
+    sender_id:currentUser.id,
+    content,
+    message_type:"text",
+    reply_to_id:row.reply_to_id,
+    created_at:new Date().toISOString(),
+    __pending:true,
+    __payload:row
+  };
 
-  try {
-    const {data: inserted, error} = await sb.from("messages").insert(row).select().single();
-    if (error) throw error;
-    addOrUpdateMessage(inserted);
-    loadChatSummaries().then(renderChatList).catch(error => console.debug("Chat summary refresh skipped:", error?.message || error));
-    input.value = "";
-    saveCurrentDraft();
-    input.style.height = "42px";
-    replyToMessage = null;
-    $("replyBar").classList.add("hidden");
-    forceScrollDown();
-  } catch (error) {
-    showNotice("Не удалось отправить сообщение: " + safeError(error), 6000);
-  } finally {
-    sending = false;
-    $("sendButton").disabled = false;
-    input.focus();
-  }
+  messages.push(pending);
+  renderMessages();
+  forceScrollDown();
+  input.value = "";
+  saveCurrentDraft();
+  input.style.height = "42px";
+  replyToMessage = null;
+  $("replyBar").classList.add("hidden");
+  sending = true;
+  $("sendButton").disabled = true;
+  await persistPendingMessage(pending);
+  sending = false;
+  $("sendButton").disabled = false;
+  if (activeChat?.id === chatIdAtSend) input.focus();
 }
 $("sendButton").addEventListener("click", sendMessage);
 
@@ -1800,27 +2023,33 @@ $("messageInput").addEventListener("input", () => {
 });
 
 /* Редактирование, удаление и закрепление */
-async function editMessage(message) {
-  if (!message.content) {
-    showNotice("У этого сообщения нет текста для редактирования.");
+function editMessage(message) {
+  if (!message.content || message.__pending || message.__failed) {
+    showNotice("Это сообщение пока нельзя редактировать.");
     return;
   }
+  editingMessageId = message.id;
+  editingDraft = message.content;
+  renderMessages();
+}
 
-  const updated = prompt("Измени текст сообщения:", message.content);
-  if (updated === null) return;
-  if (!updated.trim()) {
+async function saveInlineEdit(message) {
+  const updated = editingDraft.trim();
+  if (!updated) {
     showNotice("Текст сообщения не может быть пустым.");
     return;
   }
-
   try {
+    const editedAt = new Date().toISOString();
     const {error} = await sb.from("messages")
-      .update({content:updated.trim(), edited_at:new Date().toISOString()})
+      .update({content:updated, edited_at:editedAt})
       .eq("id", message.id)
       .eq("sender_id", currentUser.id);
     if (error) throw error;
-    message.content = updated.trim();
-    message.edited_at = new Date().toISOString();
+    message.content = updated;
+    message.edited_at = editedAt;
+    editingMessageId = null;
+    editingDraft = "";
     renderMessages();
     showNotice("Сообщение изменено.");
   } catch (error) {
