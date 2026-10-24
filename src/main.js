@@ -56,6 +56,16 @@ const APP_PIN_KEY = "minichat-local-pin-v1";
 let presenceTimer = null;
 let presenceChannel = null;
 let onlineUserIds = new Set();
+let realtimeReady = false;
+let realtimeReadyWaiters = [];
+let rtcPeer = null;
+let localCallStream = null;
+let pendingCallOffer = null;
+let currentCallTargetId = null;
+let currentCallVideo = false;
+let pendingCallCandidates = [];
+let callMicMuted = false;
+let callCameraMuted = false;
 let lastSeenSaveTime = 0;
 
 function formatLastSeen(value) {
@@ -2140,10 +2150,12 @@ document.addEventListener("keydown", event => {
 function removeRealtime() {
   if (typingTimer) clearTimeout(typingTimer);
   typingTimer = null;
+  if (rtcPeer || pendingCallOffer) endOneToOneCall(true);
   if (realtimeChannel) {
     sb.removeChannel(realtimeChannel);
     realtimeChannel = null;
   }
+  resolveRealtimeWaiters(false);
   presenceChannel = null;
   onlineUserIds = new Set();
 }
@@ -2158,6 +2170,254 @@ function broadcastTyping() {
     payload:{user_id:currentUser.id, typing:true}
   }).catch(error => console.debug("Typing broadcast skipped:", error?.message || error));
 }
+
+function resolveRealtimeWaiters(ready) {
+  realtimeReady = ready;
+  if (!ready) return;
+  const waiters = realtimeReadyWaiters.splice(0);
+  waiters.forEach(resolve => resolve(true));
+}
+function waitForRealtime(timeout = 7000) {
+  if (realtimeReady && realtimeChannel) return Promise.resolve(true);
+  return new Promise(resolve => {
+    let done = false;
+    const finish = value => {
+      if (done) return;
+      done = true;
+      resolve(value);
+    };
+    realtimeReadyWaiters.push(finish);
+    setTimeout(() => finish(false),timeout);
+  });
+}
+async function sendCallSignal(eventName, data = {}) {
+  if (!realtimeChannel || !currentUser) throw new Error("Realtime канал не подключён");
+  const result = await realtimeChannel.send({
+    type:"broadcast",
+    event:eventName,
+    payload:{...data,sender_id:currentUser.id}
+  });
+  if (result === "error" || result === "timed out") throw new Error("Не удалось передать сигнал звонка");
+}
+function callStatus(text) {
+  $("callStatus").textContent = text;
+}
+function prepareCallUi(video, incoming = false) {
+  $("callTitle").textContent = video ? "Видеозвонок MiniChat" : "Голосовой звонок MiniChat";
+  $("incomingCallActions").classList.toggle("hidden",!incoming);
+  $("activeCallActions").classList.toggle("hidden",incoming);
+  $("localCallVideo").style.display = video ? "block" : "none";
+  $("remoteCallVideo").style.display = video ? "block" : "none";
+  $("remoteCallAudio").style.display = video ? "none" : "block";
+  $("cameraCallButton").classList.toggle("hidden",!video);
+  $("callPanel").classList.remove("hidden");
+}
+function createRtcPeer(targetId, video) {
+  if (typeof RTCPeerConnection === "undefined") throw new Error("WebRTC не поддерживается этим браузером");
+  const peer = new RTCPeerConnection({
+    iceServers:[{urls:"stun:stun.l.google.com:19302"}]
+  });
+  rtcPeer = peer;
+  peer.onicecandidate = event => {
+    if (!event.candidate || !currentCallTargetId) return;
+    sendCallSignal("call-ice",{
+      target_id:currentCallTargetId,
+      candidate:event.candidate.toJSON()
+    }).catch(error => console.debug("ICE signaling failed:",error?.message || error));
+  };
+  peer.ontrack = event => {
+    const remoteStream = event.streams?.[0];
+    if (!remoteStream) return;
+    $("remoteCallVideo").srcObject = remoteStream;
+    $("remoteCallAudio").srcObject = remoteStream;
+    if (video) {
+      $("remoteCallVideo").style.display = "block";
+      $("remoteCallAudio").style.display = "none";
+    } else {
+      $("remoteCallVideo").style.display = "none";
+      $("remoteCallAudio").style.display = "block";
+    }
+    const playback = video ? $("remoteCallVideo") : $("remoteCallAudio");
+    playback.play?.().catch(() => {});
+    callStatus("Звонок соединён");
+  };
+  peer.onconnectionstatechange = () => {
+    if (!rtcPeer || rtcPeer !== peer) return;
+    if (peer.connectionState === "connected") callStatus("Звонок соединён");
+    else if (peer.connectionState === "connecting") callStatus("Соединяемся…");
+    else if (peer.connectionState === "disconnected") callStatus("Связь прервалась, пытаемся восстановить…");
+    else if (peer.connectionState === "failed") {
+      callStatus("Не удалось соединиться. Попробуйте ещё раз.");
+      showNotice("Соединение WebRTC не удалось. Для сетей с жёстким NAT может понадобиться TURN-сервер.",7000);
+    }
+  };
+  return peer;
+}
+async function flushCallCandidates() {
+  if (!rtcPeer?.remoteDescription || !currentCallTargetId) return;
+  const relevant = pendingCallCandidates.filter(item => item.sender_id === currentCallTargetId);
+  pendingCallCandidates = pendingCallCandidates.filter(item => item.sender_id !== currentCallTargetId);
+  for (const item of relevant) {
+    try { await rtcPeer.addIceCandidate(new RTCIceCandidate(item.candidate)); }
+    catch (error) { console.debug("ICE candidate skipped:",error?.message || error); }
+  }
+}
+async function startOneToOneCall(video) {
+  if (!activeChat || !currentUser) { showNotice("Сначала открой личный чат."); return; }
+  if (activeChat.is_group) { showNotice("Пока доступны только звонки один на один."); return; }
+  if (rtcPeer || pendingCallOffer) { showNotice("Сначала заверши текущий звонок."); return; }
+  if (!otherProfile?.id) { showNotice("Не удалось определить собеседника."); return; }
+  if (!navigator.mediaDevices?.getUserMedia || typeof RTCPeerConnection === "undefined") {
+    showNotice("Этот браузер не поддерживает звонки. Открой MiniChat по HTTPS в актуальном браузере.");
+    return;
+  }
+  if (!(await waitForRealtime())) {
+    showNotice("Realtime ещё подключается. Подожди пару секунд и попробуй снова.");
+    return;
+  }
+  currentCallTargetId = otherProfile.id;
+  currentCallVideo = Boolean(video);
+  callMicMuted = false;
+  callCameraMuted = false;
+  prepareCallUi(currentCallVideo,false);
+  callStatus("Запрашиваем доступ к микрофону" + (video ? " и камере…" : "…"));
+  $("muteCallButton").textContent = "Выключить микрофон";
+  $("cameraCallButton").textContent = "Выключить камеру";
+  try {
+    localCallStream = await navigator.mediaDevices.getUserMedia({
+      audio:true,
+      video:video ? {facingMode:"user",width:{ideal:720},height:{ideal:540}} : false
+    });
+    $("localCallVideo").srcObject = localCallStream;
+    $("localCallVideo").muted = true;
+    createRtcPeer(currentCallTargetId,currentCallVideo);
+    localCallStream.getTracks().forEach(track => rtcPeer.addTrack(track,localCallStream));
+    const offer = await rtcPeer.createOffer();
+    await rtcPeer.setLocalDescription(offer);
+    await sendCallSignal("call-offer",{
+      target_id:currentCallTargetId,
+      video:currentCallVideo,
+      sdp:rtcPeer.localDescription.toJSON()
+    });
+    callStatus("Вызываем собеседника…");
+  } catch (error) {
+    showNotice("Не удалось начать звонок: " + safeError(error),7000);
+    endOneToOneCall(false);
+  }
+}
+async function handleIncomingCallOffer(payload) {
+  if (!payload || payload.sender_id === currentUser?.id || payload.target_id !== currentUser?.id) return;
+  if (!activeChat || activeChat.is_group || !realtimeChannel) return;
+  if (rtcPeer || pendingCallOffer) {
+    sendCallSignal("call-reject",{target_id:payload.sender_id,reason:"busy"}).catch(() => {});
+    return;
+  }
+  pendingCallOffer = payload;
+  currentCallTargetId = payload.sender_id;
+  currentCallVideo = Boolean(payload.video);
+  prepareCallUi(currentCallVideo,true);
+  $("callTitle").textContent = (otherProfile?.username || "Собеседник") + (currentCallVideo ? " звонит по видео" : " звонит");
+  callStatus("Входящий звонок");
+}
+async function acceptOneToOneCall() {
+  const offer = pendingCallOffer;
+  if (!offer || !offer.sdp) return;
+  if (!navigator.mediaDevices?.getUserMedia) { showNotice("Микрофон недоступен в этом браузере."); return; }
+  try {
+    callStatus("Запрашиваем доступ к устройствам…");
+    localCallStream = await navigator.mediaDevices.getUserMedia({
+      audio:true,
+      video:currentCallVideo ? {facingMode:"user",width:{ideal:720},height:{ideal:540}} : false
+    });
+    $("localCallVideo").srcObject = localCallStream;
+    $("localCallVideo").muted = true;
+    $("incomingCallActions").classList.add("hidden");
+    $("activeCallActions").classList.remove("hidden");
+    callMicMuted = false;
+    callCameraMuted = false;
+    $("muteCallButton").textContent = "Выключить микрофон";
+    $("cameraCallButton").textContent = "Выключить камеру";
+    createRtcPeer(offer.sender_id,currentCallVideo);
+    localCallStream.getTracks().forEach(track => rtcPeer.addTrack(track,localCallStream));
+    await rtcPeer.setRemoteDescription(new RTCSessionDescription(offer.sdp));
+    pendingCallOffer = null;
+    await flushCallCandidates();
+    const answer = await rtcPeer.createAnswer();
+    await rtcPeer.setLocalDescription(answer);
+    await sendCallSignal("call-answer",{
+      target_id:currentCallTargetId,
+      sdp:rtcPeer.localDescription.toJSON()
+    });
+    callStatus("Подключаемся к звонку…");
+  } catch (error) {
+    showNotice("Не удалось ответить на звонок: " + safeError(error),7000);
+    endOneToOneCall(true,"call-reject");
+  }
+}
+async function handleIncomingCallAnswer(payload) {
+  if (!rtcPeer || payload?.target_id !== currentUser?.id || payload.sender_id !== currentCallTargetId || !payload.sdp) return;
+  try {
+    await rtcPeer.setRemoteDescription(new RTCSessionDescription(payload.sdp));
+    await flushCallCandidates();
+    callStatus("Ответ получен, устанавливаем соединение…");
+  } catch (error) {
+    showNotice("Не удалось установить ответ звонка: " + safeError(error),6000);
+    endOneToOneCall(true);
+  }
+}
+async function handleIncomingCallIce(payload) {
+  if (!payload?.candidate || payload.target_id !== currentUser?.id || payload.sender_id === currentUser?.id) return;
+  if (!rtcPeer || !rtcPeer.remoteDescription || payload.sender_id !== currentCallTargetId) {
+    pendingCallCandidates.push(payload);
+    if (pendingCallCandidates.length > 200) pendingCallCandidates.shift();
+    return;
+  }
+  try { await rtcPeer.addIceCandidate(new RTCIceCandidate(payload.candidate)); }
+  catch (error) { console.debug("ICE candidate skipped:",error?.message || error); }
+}
+function endOneToOneCall(notifyRemote = true,eventName = "call-end") {
+  if (notifyRemote && currentCallTargetId && realtimeChannel) {
+    sendCallSignal(eventName,{target_id:currentCallTargetId}).catch(error => console.debug("Call end signal skipped:",error?.message || error));
+  }
+  try { rtcPeer?.close(); } catch {}
+  rtcPeer = null;
+  localCallStream?.getTracks().forEach(track => track.stop());
+  localCallStream = null;
+  $("localCallVideo").srcObject = null;
+  $("remoteCallVideo").srcObject = null;
+  $("remoteCallAudio").srcObject = null;
+  $("callPanel").classList.add("hidden");
+  $("incomingCallActions").classList.add("hidden");
+  $("activeCallActions").classList.add("hidden");
+  pendingCallOffer = null;
+  pendingCallCandidates = [];
+  currentCallTargetId = null;
+  currentCallVideo = false;
+  callMicMuted = false;
+  callCameraMuted = false;
+}
+function handleRemoteCallEnd(payload,eventName) {
+  if (!payload || payload.sender_id === currentUser?.id || payload.target_id !== currentUser?.id) return;
+  if (payload.sender_id !== currentCallTargetId) return;
+  const wasIncoming = Boolean(pendingCallOffer);
+  endOneToOneCall(false);
+  showNotice(eventName === "call-reject" ? "Собеседник отклонил звонок." : wasIncoming ? "Входящий звонок завершён." : "Звонок завершён.");
+}
+$("callAudioButton").addEventListener("click",() => startOneToOneCall(false));
+$("callVideoButton").addEventListener("click",() => startOneToOneCall(true));
+$("acceptCallButton").addEventListener("click",acceptOneToOneCall);
+$("declineCallButton").addEventListener("click",() => endOneToOneCall(true,"call-reject"));
+$("hangupCallButton").addEventListener("click",() => endOneToOneCall(true));
+$("muteCallButton").addEventListener("click",() => {
+  callMicMuted = !callMicMuted;
+  localCallStream?.getAudioTracks().forEach(track => track.enabled = !callMicMuted);
+  $("muteCallButton").textContent = callMicMuted ? "Включить микрофон" : "Выключить микрофон";
+});
+$("cameraCallButton").addEventListener("click",() => {
+  callCameraMuted = !callCameraMuted;
+  localCallStream?.getVideoTracks().forEach(track => track.enabled = !callCameraMuted);
+  $("cameraCallButton").textContent = callCameraMuted ? "Включить камеру" : "Выключить камеру";
+});
 
 function subscribeToMessages() {
   removeRealtime();
@@ -2174,6 +2434,11 @@ function subscribeToMessages() {
       onlineUserIds = new Set(Object.keys(state));
       if (otherProfile) updateHeaderStatus();
     })
+    .on("broadcast", {event:"call-offer"}, ({payload}) => { handleIncomingCallOffer(payload).catch(error => console.debug("Incoming call ignored:",error?.message || error)); })
+    .on("broadcast", {event:"call-answer"}, ({payload}) => { handleIncomingCallAnswer(payload).catch(error => console.debug("Call answer ignored:",error?.message || error)); })
+    .on("broadcast", {event:"call-ice"}, ({payload}) => { handleIncomingCallIce(payload).catch(error => console.debug("ICE signal ignored:",error?.message || error)); })
+    .on("broadcast", {event:"call-end"}, ({payload}) => handleRemoteCallEnd(payload,"call-end"))
+    .on("broadcast", {event:"call-reject"}, ({payload}) => handleRemoteCallEnd(payload,"call-reject"))
     .on("broadcast", {event:"typing"}, ({payload}) => {
       if (activeChat?.id !== chatId || payload?.user_id === currentUser?.id) return;
       if (payload?.typing) {
@@ -2217,6 +2482,7 @@ function subscribeToMessages() {
       }
     })
     .subscribe(async status => {
+      resolveRealtimeWaiters(status === "SUBSCRIBED");
       if (status === "SUBSCRIBED" && currentUser && activeChat?.id === chatId) {
         const {error} = await realtimeChannel.track({
           user_id:currentUser.id,
