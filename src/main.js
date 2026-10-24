@@ -66,35 +66,10 @@ async function updateMyLastSeen() {
 
 function startPresenceUpdates() {
   if (presenceTimer) clearInterval(presenceTimer);
-  if (presenceChannel) {
-    sb.removeChannel(presenceChannel);
-    presenceChannel = null;
-  }
-
   updateMyLastSeen();
+  // Presence is tracked only inside the active chat's member-authorized Realtime channel.
   presenceTimer = setInterval(updateMyLastSeen, 300000);
   document.addEventListener("visibilitychange", handlePresenceVisibility);
-
-  if (!currentUser) return;
-  presenceChannel = sb.channel("minichat-presence", {
-    config: { presence: { key: currentUser.id } }
-  });
-  presenceChannel
-    .on("presence", {event:"sync"}, () => {
-      const state = presenceChannel?.presenceState?.() || {};
-      onlineUserIds = new Set(Object.keys(state));
-      if (otherProfile) updateHeaderStatus();
-    })
-    .subscribe(async status => {
-      if (status === "SUBSCRIBED" && currentUser) {
-        const {error} = await presenceChannel.track({
-          user_id: currentUser.id,
-          online_at: new Date().toISOString(),
-          visible: document.visibilityState === "visible"
-        });
-        if (error) console.debug("Presence tracking unavailable:", error.message);
-      }
-    });
 }
 
 function handlePresenceVisibility() {
@@ -2050,6 +2025,8 @@ function removeRealtime() {
     sb.removeChannel(realtimeChannel);
     realtimeChannel = null;
   }
+  presenceChannel = null;
+  onlineUserIds = new Set();
 }
 function broadcastTyping() {
   if (!realtimeChannel || !currentUser || !activeChat) return;
@@ -2065,10 +2042,19 @@ function broadcastTyping() {
 
 function subscribeToMessages() {
   removeRealtime();
-  if (!activeChat) return;
+  if (!activeChat || !currentUser) return;
 
   const chatId = activeChat.id;
-  realtimeChannel = sb.channel("messages-" + chatId + "-" + Date.now())
+  realtimeChannel = sb.channel("chat:" + chatId, {
+    config: {private:true, presence:{key:currentUser.id}}
+  });
+  presenceChannel = realtimeChannel;
+  realtimeChannel
+    .on("presence", {event:"sync"}, () => {
+      const state = presenceChannel?.presenceState?.() || {};
+      onlineUserIds = new Set(Object.keys(state));
+      if (otherProfile) updateHeaderStatus();
+    })
     .on("broadcast", {event:"typing"}, ({payload}) => {
       if (activeChat?.id !== chatId || payload?.user_id === currentUser?.id) return;
       if (payload?.typing) {
@@ -2111,9 +2097,16 @@ function subscribeToMessages() {
         markMessagesAsRead();
       }
     })
-    .subscribe(status => {
-      if (status === "CHANNEL_ERROR") {
-        console.warn("Realtime channel error. Check Supabase Realtime settings.");
+    .subscribe(async status => {
+      if (status === "SUBSCRIBED" && currentUser && activeChat?.id === chatId) {
+        const {error} = await realtimeChannel.track({
+          user_id:currentUser.id,
+          online_at:new Date().toISOString(),
+          visible:document.visibilityState === "visible"
+        });
+        if (error) console.debug("Chat Presence tracking unavailable:",error.message);
+      } else if (status === "CHANNEL_ERROR" || status === "TIMED_OUT") {
+        console.warn("Realtime channel unavailable. Check Supabase Realtime authorization policies.");
       }
     });
 }
