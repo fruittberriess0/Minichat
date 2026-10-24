@@ -50,6 +50,9 @@ body { transition:background .18s,color .18s; }
 .message-select-checkbox { margin:8px;accent-color:var(--accent);width:17px;height:17px;flex-shrink:0; }
 .message-row.selected .message-bubble { outline:2px solid var(--accent); }
 #pinnedBanner { overflow:hidden;text-overflow:ellipsis;white-space:nowrap;cursor:pointer; }
+.app-lock-screen { position:fixed;inset:0;z-index:2000;display:flex;align-items:center;justify-content:center;padding:20px;background:var(--bg); }
+.app-lock-card { width:100%;max-width:360px;background:var(--panel);border:1px solid var(--line);border-radius:22px;padding:24px;box-shadow:0 24px 80px #0006; }
+#appLockScreen input { width:100%;margin:14px 0;letter-spacing:8px;text-align:center;font-size:22px; }
 #mediaViewer { position:fixed;inset:0;z-index:1000;background:rgba(4,8,16,.94);display:flex;align-items:center;justify-content:center;padding:18px; }
 #mediaViewer img { max-width:min(94vw,1300px);max-height:86dvh;object-fit:contain;border-radius:8px; }
 #mediaViewer .viewer-close { position:absolute;top:max(14px,env(safe-area-inset-top));right:14px; }
@@ -412,6 +415,9 @@ label { display:block; font-size:13px; color:var(--muted); margin-top:17px; }
       <label for="languageSelect">Язык</label>
       <select id="languageSelect" class="field"><option value="ru">Русский</option><option value="en">English</option></select>
       <button class="btn secondary full" id="enableNotificationsButton" type="button" style="margin-top:12px">Включить уведомления</button>
+      <button class="btn secondary full" id="setPinButton" type="button" style="margin-top:8px">Настроить PIN-код приложения</button>
+      <button class="btn secondary full" id="signOutAllButton" type="button" style="margin-top:8px">Выйти на всех устройствах</button>
+      <div class="small muted" style="margin-top:7px">PIN — локальная блокировка экрана, не замена пароля аккаунта или E2EE.</div>
       <div class="profile-actions">
         <button class="btn" id="profileSaveButton" type="button">Сохранить</button>
         <button class="btn secondary" id="profileCancelButton" type="button">Закрыть</button>
@@ -420,6 +426,16 @@ label { display:block; font-size:13px; color:var(--muted); margin-top:17px; }
   </main>
 </div>
 
+<div id="appLockScreen" class="app-lock-screen hidden" role="dialog" aria-modal="true" aria-labelledby="appLockTitle">
+  <div class="app-lock-card">
+    <div style="font-size:32px;text-align:center">🔒</div>
+    <h2 id="appLockTitle" style="text-align:center">MiniChat заблокирован</h2>
+    <p class="muted" style="text-align:center">Введи локальный PIN-код, чтобы продолжить.</p>
+    <input id="appPinInput" class="field" type="password" inputmode="numeric" autocomplete="off" maxlength="12" aria-label="PIN-код">
+    <button class="btn full" id="unlockAppButton" type="button">Разблокировать</button>
+    <div id="appLockStatus" class="status-line" role="status"></div>
+  </div>
+</div>
 <div id="mediaViewer" class="hidden" role="dialog" aria-modal="true" aria-label="Просмотр изображений">
   <button id="mediaViewerClose" class="icon-btn viewer-close" type="button" aria-label="Закрыть просмотр">×</button>
   <button id="mediaViewerPrev" class="icon-btn viewer-nav viewer-prev" type="button" aria-label="Предыдущее фото">‹</button>
