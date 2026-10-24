@@ -3,6 +3,8 @@
 
 import { sb, MEDIA_BUCKET } from "./supabase.js";
 const $ = id => document.getElementById(id);
+// Set this to the public half of your VAPID key pair after generating it.
+const WEB_PUSH_VAPID_PUBLIC_KEY = "";
 
 let currentUser = null;
 let currentProfile = null;
@@ -261,11 +263,43 @@ $("muteChatToggle").addEventListener("change", async event => {
     showNotice("Настройки чата требуют миграции Supabase: " + (error?.message || "ошибка"), 6000);
   }
 });
+function decodeVapidPublicKey(value) {
+  const normalized = value.replace(/-/g, "+").replace(/_/g, "/");
+  const padded = normalized + "=".repeat((4 - normalized.length % 4) % 4);
+  return Uint8Array.from(atob(padded), char => char.charCodeAt(0));
+}
 $("enableNotificationsButton").addEventListener("click", async () => {
-  if (!("Notification" in window)) { showNotice("Этот браузер не поддерживает уведомления."); return; }
-  const result = await Notification.requestPermission();
-  if (result === "granted") showNotice("Разрешение включено. Для push при закрытом сайте ещё нужны VAPID-ключи и серверная функция.");
-  else showNotice("Разрешение на уведомления не выдано.");
+  if (!currentUser) { showNotice("Сначала войди в MiniChat."); return; }
+  if (!("Notification" in window) || !("serviceWorker" in navigator)) {
+    showNotice("Этот браузер не поддерживает Web Push.");
+    return;
+  }
+  try {
+    const permission = await Notification.requestPermission();
+    if (permission !== "granted") { showNotice("Разрешение на уведомления не выдано."); return; }
+    if (!WEB_PUSH_VAPID_PUBLIC_KEY) {
+      showNotice("Разрешение выдано. Для push при закрытом сайте добавь VAPID public key в src/main.js и настрой Edge Function.");
+      return;
+    }
+    const registration = await navigator.serviceWorker.ready;
+    let subscription = await registration.pushManager.getSubscription();
+    if (!subscription) {
+      subscription = await registration.pushManager.subscribe({
+        userVisibleOnly:true,
+        applicationServerKey:decodeVapidPublicKey(WEB_PUSH_VAPID_PUBLIC_KEY)
+      });
+    }
+    const {error} = await sb.from("push_subscriptions").upsert({
+      user_id:currentUser.id,
+      endpoint:subscription.endpoint,
+      subscription:subscription.toJSON(),
+      updated_at:new Date().toISOString()
+    }, {onConflict:"endpoint"});
+    if (error) throw error;
+    showNotice("Push-уведомления настроены на этом устройстве ❤️");
+  } catch (error) {
+    showNotice("Не удалось включить push. Проверь миграцию Supabase и VAPID-ключи: " + safeError(error), 7000);
+  }
 });
 $("themeButton").addEventListener("click", () => {
   applyTheme(document.documentElement.dataset.theme === "light" ? "dark" : "light");
@@ -1184,6 +1218,17 @@ function renderMessages() {
         if (first) audio.src = first;
         else ensureUrl(mediaPath).then(u => { if (u) audio.src = u; });
         bubble.appendChild(audio);
+        const speed = document.createElement("button");
+        speed.type = "button";
+        speed.className = "btn secondary small-btn";
+        speed.style.cssText = "margin-top:6px;padding:3px 8px";
+        speed.textContent = "1×";
+        speed.setAttribute("aria-label", "Скорость воспроизведения");
+        speed.addEventListener("click", () => {
+          audio.playbackRate = audio.playbackRate === 1 ? 1.5 : 1;
+          speed.textContent = audio.playbackRate === 1 ? "1×" : "1.5×";
+        });
+        bubble.appendChild(speed);
         const caption = document.createElement("div");
         caption.className = "small muted";
         caption.style.marginTop = "5px";
