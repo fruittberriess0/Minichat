@@ -54,8 +54,16 @@ Deno.serve(async request => {
     .filter((id: string) => id !== message.sender_id))];
   if (!recipientIds.length) return json({sent:0});
 
+  const {data:mutedRows,error:muteError} = await supabase
+    .from("chat_preferences").select("user_id").eq("chat_id",message.chat_id)
+    .in("user_id",recipientIds).eq("muted",true);
+  if (muteError) return json({error:"Could not read notification preferences"},500);
+  const mutedIds = new Set((mutedRows || []).map((row: {user_id:string}) => row.user_id));
+  const allowedIds = recipientIds.filter((id:string) => !mutedIds.has(id));
+  if (!allowedIds.length) return json({sent:0,muted:recipientIds.length});
+
   const {data:subscriptions,error:subscriptionsError} = await supabase
-    .from("push_subscriptions").select("id,user_id,subscription").in("user_id", recipientIds);
+    .from("push_subscriptions").select("id,user_id,subscription").in("user_id", allowedIds);
   if (subscriptionsError) return json({error:"Could not read subscriptions"}, 500);
 
   webpush.setVapidDetails(vapidSubject, vapidPublic, vapidPrivate);
