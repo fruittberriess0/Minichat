@@ -370,7 +370,7 @@ function wrapComposerSelection(delimiter) {
   const value = input.value;
   const start = input.selectionStart ?? value.length;
   const end = input.selectionEnd ?? value.length;
-  const selected = value.slice(start,end) || (currentLanguage === "en" ? "text" : "текст");
+  const selected = value.slice(start,end) || "текст";
   input.setRangeText(delimiter + selected + delimiter,start,end,"select");
   input.focus();
   saveCurrentDraft();
@@ -2044,8 +2044,17 @@ function editMessage(message) {
     showNotice("Это сообщение пока нельзя редактировать.");
     return;
   }
+  if (isEncryptedText(message.content) && !hasSharedPassphrase()) {
+    showNotice("Чтобы редактировать зашифрованное сообщение, сначала установи общий ключ.");
+    return;
+  }
+  const plain = message.__plainContent;
+  if (isEncryptedText(message.content) && plain === undefined) {
+    showNotice("Подожди завершения расшифровки и попробуй снова.");
+    return;
+  }
   editingMessageId = message.id;
-  editingDraft = message.content;
+  editingDraft = plain ?? message.content;
   renderMessages();
 }
 
@@ -2056,13 +2065,22 @@ async function saveInlineEdit(message) {
     return;
   }
   try {
+    if (isEncryptedText(message.content) && !hasSharedPassphrase()) {
+      showNotice("Для редактирования зашифрованного сообщения нужен общий ключ.");
+      return;
+    }
+    const savedContent = hasSharedPassphrase()
+      ? await encryptTextMessage(updated,activeChat.id)
+      : updated;
     const editedAt = new Date().toISOString();
     const {error} = await sb.from("messages")
-      .update({content:updated, edited_at:editedAt})
+      .update({content:savedContent, edited_at:editedAt})
       .eq("id", message.id)
       .eq("sender_id", currentUser.id);
     if (error) throw error;
-    message.content = updated;
+    message.content = savedContent;
+    if (isEncryptedText(savedContent)) message.__plainContent = updated;
+    else delete message.__plainContent;
     message.edited_at = editedAt;
     editingMessageId = null;
     editingDraft = "";
