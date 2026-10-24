@@ -37,10 +37,13 @@ Review and apply the migrations in a separate development project first, in time
 1. `202610240001_messaging_features.sql`
 2. `202610240002_core_rls_and_rate_limit.sql`
 3. `202610240003_private_realtime_channels.sql`
+4. `202610240004_e2ee_text_messages.sql` (experimental, opt-in; review the caveats below)
 
 Back up the database and test login, reads/writes, group creation, media Storage policies, and Realtime using two chat members plus a non-member. Migration 002 adds restrictive policies to existing core tables; review the existing permissive policies and grants before applying it to production.
 
 Migration 003 uses private Realtime topics. In Supabase Dashboard, disable public-channel access for this project if that matches the intended security model. The client uses member-scoped private topics (`chat:<chat-uuid>`) for typing and Presence.
+
+Migration 004 only adds the E2EE payload column, a device-key directory, and an opt-in preference; it does **not** turn encryption on automatically. E2EE is experimental and not independently audited. It encrypts only new text messages (not media, chat names, timestamps, push metadata, existing history, or all database metadata). Each participant must register every device before a chat can send encrypted text. A newly added device cannot decrypt earlier messages because it did not receive a key envelope when they were sent; losing local browser data/private key may make messages unrecoverable. Do not promise audited Signal-level security, and test this on a separate development project before enabling it for sensitive content.
 
 ## Web Push setup
 
