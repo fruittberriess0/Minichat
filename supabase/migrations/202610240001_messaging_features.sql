@@ -251,4 +251,79 @@ $$;
 revoke all on function public.remove_chat_member(uuid,uuid) from public;
 grant execute on function public.remove_chat_member(uuid,uuid) to authenticated;
 
+
+create index if not exists messages_sender_created_desc_idx
+  on public.messages (sender_id, created_at desc);
+
+create or replace function public.get_chat_summaries()
+returns table(
+  chat_id uuid,
+  latest_id uuid,
+  latest_sender_id uuid,
+  latest_content text,
+  latest_created_at timestamptz,
+  latest_message_type text,
+  latest_file_name text,
+  unread_count bigint
+)
+language plpgsql stable security definer
+set search_path = public, pg_temp
+as $$
+begin
+  if auth.uid() is null then raise exception 'Authentication required'; end if;
+  return query
+  select cm.chat_id,
+         latest.id,
+         latest.sender_id,
+         latest.content,
+         latest.created_at,
+         latest.message_type,
+         latest.file_name,
+         coalesce(unread.total,0)::bigint
+  from public.chat_members cm
+  left join lateral (
+    select m.id,m.sender_id,m.content,m.created_at,m.message_type,m.file_name
+    from public.messages m
+    where m.chat_id=cm.chat_id and m.deleted_at is null
+    order by m.created_at desc
+    limit 1
+  ) latest on true
+  left join lateral (
+    select count(*)::bigint as total
+    from public.messages m
+    where m.chat_id=cm.chat_id and m.sender_id <> auth.uid()
+      and m.read_at is null and m.deleted_at is null
+  ) unread on true
+  where cm.user_id=auth.uid();
+end;
+$$;
+revoke all on function public.get_chat_summaries() from public;
+grant execute on function public.get_chat_summaries() to authenticated;
+
+create or replace function public.get_chat_stats(p_chat_id uuid)
+returns jsonb
+language plpgsql stable security definer
+set search_path = public, pg_temp
+as $$
+declare result jsonb;
+begin
+  if auth.uid() is null or not public.is_chat_member(p_chat_id) then
+    raise exception 'Chat membership required';
+  end if;
+  select jsonb_build_object(
+    'total_messages',count(*),
+    'my_messages',count(*) filter (where sender_id=auth.uid()),
+    'other_messages',count(*) filter (where sender_id<>auth.uid()),
+    'first_message_at',min(created_at),
+    'latest_message_at',max(created_at),
+    'active_days',count(distinct (created_at at time zone 'UTC')::date)
+  ) into result
+  from public.messages
+  where chat_id=p_chat_id and deleted_at is null;
+  return result;
+end;
+$$;
+revoke all on function public.get_chat_stats(uuid) from public;
+grant execute on function public.get_chat_stats(uuid) to authenticated;
+
 commit;
