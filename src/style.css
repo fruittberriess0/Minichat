@@ -298,3 +298,10 @@ label { display:block; font-size:13px; color:var(--muted); margin-top:17px; }
 .device-session-name { font-size:13px;font-weight:800; }
 .device-session-time { color:var(--muted);font-size:11px;margin-top:5px; }
 .device-session-current { color:var(--accent);font-size:10px;font-weight:800;text-transform:uppercase;letter-spacing:.5px; }
+
+.sticker-picker { display:grid;grid-template-columns:repeat(6,minmax(0,1fr));gap:7px;padding:10px 2px;max-height:190px;overflow:auto; }
+.sticker-choice { border:1px solid var(--line);border-radius:12px;background:var(--panel2);color:var(--text);font-size:31px;min-height:55px;display:grid;place-items:center;transition:transform .12s,background .12s; }
+.sticker-choice:hover { transform:scale(1.06);background:var(--panel); }
+.message-sticker-bubble { min-width:74px;padding:8px!important;background:transparent!important;border-color:transparent!important;box-shadow:none!important; }
+.message-sticker-bubble .message-text { font-size:58px;line-height:1.12;text-align:center; }
+.message-sticker-bubble .message-footer { justify-content:center; }
