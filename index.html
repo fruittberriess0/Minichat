@@ -327,7 +327,7 @@ label { display:block; font-size:13px; color:var(--muted); margin-top:17px; }
           <button class="icon-btn" id="sendButton" type="button" title="Отправить сообщение">➤</button>
         </div>
         <div id="emojiPicker" class="hidden" style="display:flex;flex-wrap:wrap;gap:5px;padding:8px 2px" aria-label="Выбор эмодзи"></div>
-        <div class="small muted" style="padding:7px 5px 0">Enter — отправить · Shift + Enter — новая строка</div>
+        <div class="small muted" style="padding:7px 5px 0">Enter — отправить · Shift + Enter — новая строка · Ctrl/⌘ + K — поиск</div>
       </div>
     </section>
 
@@ -1130,6 +1130,38 @@ function renderMessages() {
         else ensureUrl(mediaPath).then(u => { if (u) image.src = u; });
         image.addEventListener("click", openMedia);
         bubble.appendChild(image);
+      } else if ((message.mime_type || "").startsWith("audio/")) {
+        const audio = document.createElement("audio");
+        audio.controls = true;
+        audio.preload = "metadata";
+        audio.style.cssText = "display:block;width:min(280px,100%);margin-top:8px";
+        audio.setAttribute("aria-label", message.file_name || "Аудиосообщение");
+        const first = cachedUrl(mediaPath);
+        if (first) audio.src = first;
+        else ensureUrl(mediaPath).then(u => { if (u) audio.src = u; });
+        bubble.appendChild(audio);
+        const caption = document.createElement("div");
+        caption.className = "small muted";
+        caption.style.marginTop = "5px";
+        caption.textContent = message.file_name || "Аудио";
+        bubble.appendChild(caption);
+      } else if ((message.mime_type || "").startsWith("video/")) {
+        const video = document.createElement("video");
+        video.controls = true;
+        video.preload = "metadata";
+        video.playsInline = true;
+        video.className = "message-image";
+        video.style.maxHeight = "360px";
+        video.setAttribute("aria-label", message.file_name || "Видеосообщение");
+        const first = cachedUrl(mediaPath);
+        if (first) video.src = first;
+        else ensureUrl(mediaPath).then(u => { if (u) video.src = u; });
+        bubble.appendChild(video);
+        const caption = document.createElement("div");
+        caption.className = "small muted";
+        caption.style.marginTop = "5px";
+        caption.textContent = message.file_name || "Видео";
+        bubble.appendChild(caption);
       } else {
         const link = document.createElement("a");
         link.className = "message-attachment";
@@ -1298,6 +1330,33 @@ $("messageInput").addEventListener("keydown", event => {
   if (event.key === "Enter" && !event.shiftKey) {
     event.preventDefault();
     sendMessage();
+  }
+});
+document.addEventListener("keydown", event => {
+  const target = event.target;
+  const typing = target && (target.matches("input,textarea") || target.isContentEditable);
+  if ((event.metaKey || event.ctrlKey) && event.key.toLowerCase() === "k") {
+    event.preventDefault();
+    if (!$("app").classList.contains("hidden")) {
+      if (activeChat) {
+        $("messageSearchBar").classList.remove("hidden");
+        $("messageSearchInput").focus();
+      } else {
+        $("chatSearch").focus();
+      }
+    }
+  }
+  if (event.key === "Escape") {
+    if (!$("emojiPicker").classList.contains("hidden")) $("emojiPicker").classList.add("hidden");
+    if (!$("messageSearchBar").classList.contains("hidden")) {
+      $("messageSearchBar").classList.add("hidden");
+      $("messageSearchInput").value = "";
+      messageSearchTerm = "";
+      $("messageSearchCount").textContent = "";
+      renderMessages();
+    }
+    if (!$("profilePanel").classList.contains("hidden")) closeProfile();
+    if (typing && target === $("messageSearchInput")) target.blur();
   }
 });
 $("messageInput").addEventListener("input", () => {
