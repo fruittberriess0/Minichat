@@ -424,6 +424,7 @@ let chatSummaries = {};
 let unreadWhileAway = 0;
 let soundEnabled = true;
 let currentLanguage = "ru";
+let currentChatMuted = false;
 let isPasswordRecovery = new URLSearchParams(location.search).get("resetPassword") === "1";
 
 let presenceTimer = null;
@@ -861,6 +862,14 @@ $("loginForm").addEventListener("submit", async event => {
   setLoginStatus("Выполняется вход...");
 
   try {
+    if (isPasswordRecovery) {
+      const {error} = await sb.auth.updateUser({password});
+      if (error) throw error;
+      isPasswordRecovery = false;
+      setLoginStatus("Пароль изменён. Теперь можно войти.");
+      try { history.replaceState({}, "", location.pathname); } catch {}
+      return;
+    }
     const { data, error } = await sb.auth.signInWithPassword({email, password});
     if (error) throw error;
     if (data.user) await initializeUser(data.user);
@@ -870,6 +879,35 @@ $("loginForm").addEventListener("submit", async event => {
     button.disabled = false;
   }
 });
+
+$("magicLinkButton").addEventListener("click", async () => {
+  const email = $("email").value.trim();
+  if (!email) { setLoginStatus("Сначала введи email.", true); $("email").focus(); return; }
+  try {
+    const {error} = await sb.auth.signInWithOtp({email, options:{emailRedirectTo:location.origin}});
+    if (error) throw error;
+    setLoginStatus("Ссылка для входа отправлена на email.");
+  } catch (error) { setLoginStatus(safeError(error), true); }
+});
+$("resetPasswordButton").addEventListener("click", async () => {
+  const email = $("email").value.trim();
+  if (!email) { setLoginStatus("Введи email, чтобы отправить ссылку сброса.", true); $("email").focus(); return; }
+  try {
+    const {error} = await sb.auth.resetPasswordForEmail(email, {redirectTo:location.origin + "/?resetPassword=1"});
+    if (error) throw error;
+    setLoginStatus("Если адрес зарегистрирован, ссылка для сброса пароля отправлена.");
+  } catch (error) { setLoginStatus(safeError(error), true); }
+});
+async function startOAuth(provider) {
+  try {
+    const {error} = await sb.auth.signInWithOAuth({provider, options:{redirectTo:location.origin}});
+    if (error) throw error;
+  } catch (error) {
+    setLoginStatus("Проверь, включён ли " + provider + " в Supabase Auth: " + safeError(error), true);
+  }
+}
+$("googleLoginButton").addEventListener("click", () => startOAuth("google"));
+$("appleLoginButton").addEventListener("click", () => startOAuth("apple"));
 
 $("registerButton").addEventListener("click", async () => {
   const email = $("email").value.trim();
@@ -933,6 +971,12 @@ async function restoreSession() {
 }
 
 sb.auth.onAuthStateChange((event, session) => {
+  if (event === "PASSWORD_RECOVERY") {
+    isPasswordRecovery = true;
+    $("loginButton").textContent = "Сохранить новый пароль";
+    setLoginStatus("Введи новый пароль и нажми «Сохранить новый пароль».");
+    setLoggedIn(false);
+  }
   if (event === "SIGNED_OUT") {
     currentUser = null;
     currentProfile = null;
@@ -1153,6 +1197,12 @@ async function loadChatSummaries() {
     const tb = new Date(chatSummaries[b.id]?.latest?.created_at || b.created_at || 0).getTime();
     return tb - ta;
   });
+  updateUnreadTitle();
+}
+
+function updateUnreadTitle() {
+  const count = Object.values(chatSummaries).reduce((sum, value) => sum + (value?.unread || 0), 0);
+  document.title = (count ? "(" + (count > 99 ? "99+" : count) + ") " : "") + "MiniChat ❤️";
 }
 
 function summaryPreview(message) {
@@ -1234,6 +1284,25 @@ $("refreshButton").addEventListener("click", async () => {
 });
 
 /* Открытие чата и сообщения */
+async function loadChatPreference(chatId) {
+  currentChatMuted = false;
+  $("muteChatToggle").checked = false;
+  if (!currentUser || !chatId) return;
+  try {
+    const {data, error} = await sb.from("chat_preferences").select("muted,wallpaper")
+      .eq("user_id",currentUser.id).eq("chat_id",chatId).maybeSingle();
+    if (error) throw error;
+    currentChatMuted = Boolean(data?.muted);
+    $("muteChatToggle").checked = currentChatMuted;
+    if (data?.wallpaper) {
+      $("wallpaperSelect").value = data.wallpaper;
+      applyWallpaper(data.wallpaper);
+    }
+  } catch (error) {
+    console.debug("Per-chat settings need the optional migration:", error?.message || error);
+  }
+}
+
 async function openChat(chat) {
   activeChat = chat;
   replyToMessage = null;
@@ -1254,6 +1323,7 @@ async function openChat(chat) {
   $("messageSearchBar").classList.add("hidden");
   renderChatList();
   await Promise.all([loadMembers(), loadMessages()]);
+  await loadChatPreference(chat.id);
   await markMessagesAsRead();
   if (chatSummaries[chat.id]) chatSummaries[chat.id].unread = 0;
   renderChatList();
@@ -1883,6 +1953,12 @@ function subscribeToMessages() {
         return;
       }
       if (payload.eventType === "INSERT" && payload.new.sender_id !== currentUser?.id) {
+        if (!currentChatMuted) {
+          playMessageSound();
+          if (document.visibilityState !== "visible" && "Notification" in window && Notification.permission === "granted") {
+            try { new Notification("MiniChat ❤️", {body:payload.new.content || "Новое сообщение", icon:"/icons/icon.svg"}); } catch {}
+          }
+        }
         const messageBox = $("messages");
         const distance = messageBox.scrollHeight - messageBox.scrollTop - messageBox.clientHeight;
         if (distance > 180) unreadWhileAway += 1;
@@ -1918,6 +1994,13 @@ $("backButton").addEventListener("click", () => {
   setMobileChatMode(false);
   renderChatList();
 });
+
+/* Installable PWA. The service worker never caches Supabase API/auth/storage calls. */
+if ("serviceWorker" in navigator && /^https?:$/.test(location.protocol)) {
+  window.addEventListener("load", () => {
+    navigator.serviceWorker.register("/sw.js").catch(error => console.warn("PWA service worker unavailable:", error));
+  });
+}
 
 /* Запуск приложения */
 restoreSession();
