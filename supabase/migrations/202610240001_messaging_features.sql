@@ -182,4 +182,73 @@ $$;
 revoke all on function public.create_chat_with_members(text,boolean,uuid[]) from public;
 grant execute on function public.create_chat_with_members(text,boolean,uuid[]) to authenticated;
 
+
+create or replace function public.search_chat_messages(p_query text)
+returns table(id uuid, chat_id uuid, sender_id uuid, content text, created_at timestamptz, file_name text)
+language plpgsql stable security definer
+set search_path = public, pg_temp
+as $$
+declare q text := trim(coalesce(p_query, ''));
+begin
+  if auth.uid() is null then raise exception 'Authentication required'; end if;
+  if length(q) < 2 or length(q) > 200 then raise exception 'Search query must be 2-200 characters'; end if;
+  return query
+    select m.id, m.chat_id, m.sender_id, m.content, m.created_at, m.file_name
+    from public.messages m
+    where public.is_chat_member(m.chat_id)
+      and m.deleted_at is null
+      and coalesce(m.content,'') <> ''
+      and to_tsvector('simple', coalesce(m.content,'')) @@ plainto_tsquery('simple', q)
+    order by m.created_at desc
+    limit 100;
+end;
+$$;
+revoke all on function public.search_chat_messages(text) from public;
+grant execute on function public.search_chat_messages(text) to authenticated;
+
+create or replace function public.update_chat_member_role(p_chat_id uuid, p_user_id uuid, p_role text)
+returns void
+language plpgsql security definer
+set search_path = public, pg_temp
+as $$
+declare caller_role text;
+begin
+  if auth.uid() is null then raise exception 'Authentication required'; end if;
+  if p_role not in ('admin','member') then raise exception 'Role must be admin or member'; end if;
+  select cm.role into caller_role from public.chat_members cm
+    where cm.chat_id = p_chat_id and cm.user_id = auth.uid();
+  if caller_role not in ('owner','admin') then raise exception 'Only an owner or admin can change roles'; end if;
+  if not exists (select 1 from public.chat_members cm where cm.chat_id=p_chat_id and cm.user_id=p_user_id) then
+    raise exception 'Target user is not a member';
+  end if;
+  if exists (select 1 from public.chat_members cm where cm.chat_id=p_chat_id and cm.user_id=p_user_id and cm.role='owner') then
+    raise exception 'Owner role cannot be changed';
+  end if;
+  update public.chat_members set role=p_role where chat_id=p_chat_id and user_id=p_user_id;
+end;
+$$;
+revoke all on function public.update_chat_member_role(uuid,uuid,text) from public;
+grant execute on function public.update_chat_member_role(uuid,uuid,text) to authenticated;
+
+create or replace function public.remove_chat_member(p_chat_id uuid, p_user_id uuid)
+returns void
+language plpgsql security definer
+set search_path = public, pg_temp
+as $$
+declare caller_role text;
+begin
+  if auth.uid() is null then raise exception 'Authentication required'; end if;
+  select cm.role into caller_role from public.chat_members cm
+    where cm.chat_id=p_chat_id and cm.user_id=auth.uid();
+  if caller_role not in ('owner','admin') then raise exception 'Only an owner or admin can remove members'; end if;
+  if p_user_id = auth.uid() then raise exception 'Use leave-chat flow to remove yourself'; end if;
+  if exists (select 1 from public.chat_members cm where cm.chat_id=p_chat_id and cm.user_id=p_user_id and cm.role='owner') then
+    raise exception 'The owner cannot be removed';
+  end if;
+  delete from public.chat_members where chat_id=p_chat_id and user_id=p_user_id;
+end;
+$$;
+revoke all on function public.remove_chat_member(uuid,uuid) from public;
+grant execute on function public.remove_chat_member(uuid,uuid) to authenticated;
+
 commit;
