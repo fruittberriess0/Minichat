@@ -233,7 +233,7 @@ begin
   if p_role not in ('admin','member') then raise exception 'Role must be admin or member'; end if;
   select cm.role into caller_role from public.chat_members cm
     where cm.chat_id = p_chat_id and cm.user_id = auth.uid();
-  if caller_role not in ('owner','admin') then raise exception 'Only an owner or admin can change roles'; end if;
+  if caller_role is null or caller_role not in ('owner','admin') then raise exception 'Only an owner or admin can change roles'; end if;
   if not exists (select 1 from public.chat_members cm where cm.chat_id=p_chat_id and cm.user_id=p_user_id) then
     raise exception 'Target user is not a member';
   end if;
@@ -256,7 +256,7 @@ begin
   if auth.uid() is null then raise exception 'Authentication required'; end if;
   select cm.role into caller_role from public.chat_members cm
     where cm.chat_id=p_chat_id and cm.user_id=auth.uid();
-  if caller_role not in ('owner','admin') then raise exception 'Only an owner or admin can remove members'; end if;
+  if caller_role is null or caller_role not in ('owner','admin') then raise exception 'Only an owner or admin can remove members'; end if;
   if p_user_id = auth.uid() then raise exception 'Use leave-chat flow to remove yourself'; end if;
   if exists (select 1 from public.chat_members cm where cm.chat_id=p_chat_id and cm.user_id=p_user_id and cm.role='owner') then
     raise exception 'The owner cannot be removed';
@@ -379,7 +379,7 @@ begin
   if auth.uid() is null then raise exception 'Authentication required'; end if;
   select cm.role into caller_role from public.chat_members cm
     where cm.chat_id=p_chat_id and cm.user_id=auth.uid();
-  if caller_role not in ('owner','admin') then raise exception 'Only an owner or admin can add members'; end if;
+  if caller_role is null or caller_role not in ('owner','admin') then raise exception 'Only an owner or admin can add members'; end if;
   if not exists (select 1 from auth.users u where u.id=p_user_id) then raise exception 'User not found'; end if;
   insert into public.chat_members (chat_id,user_id,role)
   values (p_chat_id,p_user_id,'member')
@@ -402,7 +402,7 @@ begin
   end if;
   select cm.role into caller_role from public.chat_members cm
     where cm.chat_id=p_chat_id and cm.user_id=auth.uid();
-  if caller_role not in ('owner','admin') then raise exception 'Only an owner or admin can rename the group'; end if;
+  if caller_role is null or caller_role not in ('owner','admin') then raise exception 'Only an owner or admin can rename the group'; end if;
   update public.chats set title=trim(p_title)
     where id=p_chat_id and is_group=true;
   if not found then raise exception 'Group chat not found'; end if;
