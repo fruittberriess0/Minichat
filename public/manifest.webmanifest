@@ -1,0 +1,19 @@
+{
+  "name": "MiniChat ❤️",
+  "short_name": "MiniChat",
+  "description": "Личное пространство для переписки",
+  "start_url": "/",
+  "scope": "/",
+  "display": "standalone",
+  "orientation": "portrait",
+  "background_color": "#0b1220",
+  "theme_color": "#101b2b",
+  "icons": [
+    {
+      "src": "/icons/icon.svg",
+      "sizes": "any",
+      "type": "image/svg+xml",
+      "purpose": "any maskable"
+    }
+  ]
+}
