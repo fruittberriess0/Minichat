@@ -109,6 +109,10 @@ begin
   if new.sender_id is distinct from actor then
     raise exception 'Sender must match authenticated user' using errcode = '42501';
   end if;
+  -- Do not trust a client-supplied timestamp to bypass the quota.
+  new.created_at := now();
+  -- Serialize concurrent inserts from the same user to make the quota meaningful.
+  perform pg_advisory_xact_lock(hashtext(actor::text));
   select count(*) into recent_count
     from public.messages m
     where m.sender_id = actor and m.created_at > now() - interval '1 minute';
