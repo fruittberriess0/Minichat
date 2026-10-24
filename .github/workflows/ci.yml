@@ -14,9 +14,13 @@ jobs:
           node-version: 22
       - name: Install dependencies
         run: npm install
-      - name: Check source syntax
-        run: node scripts/check-inline-js.mjs
-      - name: Run smoke tests
-        run: node --test tests/*.test.mjs
+      - name: Run source checks and smoke tests
+        run: npm run test:source
+      - name: Run unit tests
+        run: npm run test:unit
+      - name: Install Chromium for Playwright
+        run: npx playwright install --with-deps chromium
+      - name: Run browser smoke tests
+        run: npm run test:e2e
       - name: Build production bundle
         run: npm run build
