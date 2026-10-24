@@ -284,3 +284,10 @@ label { display:block; font-size:13px; color:var(--muted); margin-top:17px; }
 .call-actions { display:flex;gap:8px;justify-content:center;flex-wrap:wrap; }
 .call-actions button { min-width:125px; }
 @media(max-width:600px){.call-card{padding:16px}.call-media{grid-template-columns:1fr}.call-media video{max-height:42dvh}.call-actions button{flex:1}}
+
+.device-sessions-list { display:flex;flex-direction:column;gap:9px; }
+.device-session-item { display:flex;align-items:center;justify-content:space-between;gap:12px;padding:13px;border:1px solid var(--line);background:var(--surface-glass);border-radius:13px; }
+.device-session-copy { min-width:0;overflow-wrap:anywhere; }
+.device-session-name { font-size:13px;font-weight:800; }
+.device-session-time { color:var(--muted);font-size:11px;margin-top:5px; }
+.device-session-current { color:var(--accent);font-size:10px;font-weight:800;text-transform:uppercase;letter-spacing:.5px; }
