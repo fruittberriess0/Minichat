@@ -19,6 +19,7 @@ if (import.meta.env.PROD) {
   catch (error) { console.debug("Vercel Analytics is not enabled:",error?.message || error); }
 }
 import { escapeHtml, formatTime, initials, appendFormattedText } from "./utils/format.js";
+import { initSharedSpace } from "./features/shared-space.js";
 const $ = id => document.getElementById(id);
 // Set this to the public half of your VAPID key pair after generating it.
 const WEB_PUSH_VAPID_PUBLIC_KEY = "";
@@ -46,6 +47,9 @@ let videoRecorder = null;
 let videoChunks = [];
 let videoStream = null;
 let reactionsByMessage = {};
+let mediaViewerIndex = 0;
+let galleryOverride = null;
+let galleryOverrideChatId = null;
 let appLockTimer = null;
 const APP_PIN_KEY = "minichat-local-pin-v1";
 
@@ -1075,6 +1079,8 @@ async function saveChatPreferences() {
 
 async function openChat(chat) {
   activeChat = chat;
+  galleryOverride = null;
+  galleryOverrideChatId = null;
   replyToMessage = null;
   $("replyBar").classList.add("hidden");
   $("welcome").classList.add("hidden");
@@ -2077,7 +2083,31 @@ document.addEventListener("paste", event => {
 });
 
 function galleryMessages() {
+  if (galleryOverride && galleryOverrideChatId === activeChat?.id) return galleryOverride;
   return messages.filter(message => message.media_path && (message.message_type === "image" || (message.mime_type || "").startsWith("image/")));
+}
+
+async function openSharedAlbum(chat) {
+  if (!currentUser || !chat || chat.id !== activeChat?.id) return;
+  try {
+    const {data,error} = await sb.from("messages")
+      .select("id,chat_id,sender_id,created_at,message_type,media_path,mime_type,file_name")
+      .eq("chat_id",chat.id)
+      .is("deleted_at",null)
+      .not("media_path","is",null)
+      .order("created_at",{ascending:true})
+      .limit(200);
+    if (error) throw error;
+    galleryOverride = (data || []).filter(message => message.message_type === "image" || (message.mime_type || "").startsWith("image/"));
+    galleryOverrideChatId = chat.id;
+    if (!galleryOverride.length) {
+      showNotice("В этом чате ещё нет фотографий.");
+      return;
+    }
+    await showMediaViewer(0);
+  } catch (error) {
+    showNotice("Не удалось открыть общий альбом: " + safeError(error),6000);
+  }
 }
 async function showMediaViewer(index) {
   const items = galleryMessages();
@@ -2452,6 +2482,16 @@ if ("serviceWorker" in navigator && /^https?:$/.test(location.protocol)) {
     navigator.serviceWorker.register("/sw.js").catch(error => console.warn("PWA service worker unavailable:", error));
   });
 }
+
+initSharedSpace({
+  sb,
+  $,
+  getCurrentUser:() => currentUser,
+  getActiveChat:() => activeChat,
+  showNotice,
+  safeError,
+  onAlbum:openSharedAlbum
+});
 
 /* Запуск приложения */
 restoreSession();
