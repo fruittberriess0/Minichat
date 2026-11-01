@@ -30,7 +30,10 @@ async function mockAccount(page, options = {}) {
     else if (table === "get_chat_summaries") data = chats.map(chat => ({chat_id:chat.id,latest_id:M,latest_content:chat.id === A ? original.content : "Привет",latest_sender_id:OTHER,latest_created_at:original.created_at,unread_count:chat.id === B ? 3 : 0}));
     else if (table === "chat_preferences") data = {muted:false,message_expiry_seconds:0,e2ee_enabled:Boolean(options.encryptedTarget && url.searchParams.get("chat_id") === "eq."+B)};
     else if (table === "messages") {
-      if (method === "POST") {
+      if (method === "PATCH") {
+        writes.push({method,...req.postDataJSON()});
+        data = null;
+      } else if (method === "POST") {
         const row = req.postDataJSON();
         writes.push(row);
         if (options.failSend || (options.uncertainSend && writes.length === 1)) {status = 503;data = {message:"Временно недоступно"};}
@@ -39,7 +42,7 @@ async function mockAccount(page, options = {}) {
       } else {
         const isB = url.searchParams.get("chat_id") === "eq." + B;
         if (!isB && options.delayA) await new Promise(resolve => setTimeout(resolve,options.delayA));
-        data = isB ? [{...original,id:"other-message",chat_id:B,content:"Сообщение из группы"}] : [original];
+        data = isB ? [{...original,id:"other-message",chat_id:B,content:"Сообщение из группы"}] : (options.history || [original]);
         if (url.searchParams.has("sender_id")) data = {...writes[0],created_at:new Date().toISOString()};
       }
     } else if (table === "find_chat_user") data = [{user_id:OTHER,username:"Друг"}];
@@ -328,5 +331,27 @@ test("recording can be stopped on a phone after closing the tools panel",async (
   await page.locator("#stopRecordingButton").click();
   await expect(page.locator("#stopRecordingButton")).not.toBeVisible();
   expect(writes).toHaveLength(0);
+  expect(errors).toEqual([]);
+});
+
+test("a history containing replies renders without a missing encryption helper",async ({page}) => {
+  const reply = {...original,id:"20000000-0000-4000-8000-000000000002",sender_id:USER,content:"Да, буду!",reply_to_id:M};
+  const {errors} = await mockAccount(page,{history:[reply,original]});
+  await openChat(page);
+  await expect(page.locator("#messages")).toContainText("Да, буду!");
+  await expect(page.locator("#messages")).toContainText("↪ " + original.content);
+  await expect(page.locator("#messages")).not.toContainText("Не удалось загрузить сообщения");
+  expect(errors).toEqual([]);
+});
+
+test("a plain message opens its editor and saves without missing encryption helpers",async ({page}) => {
+  const {errors,writes} = await mockAccount(page,{history:[{...original,sender_id:USER}]});
+  await openChat(page);
+  await page.getByRole("button",{name:"Редактировать",exact:true}).click();
+  await page.getByRole("textbox",{name:"Редактирование сообщения",exact:true}).fill("Исправленный текст");
+  await page.locator("#messages").getByRole("button",{name:"Сохранить",exact:true}).click();
+  await expect(page.locator("#messages")).toContainText("Исправленный текст");
+  await expect(page.getByRole("textbox",{name:"Редактирование сообщения",exact:true})).toHaveCount(0);
+  expect(writes).toContainEqual(expect.objectContaining({method:"PATCH",content:"Исправленный текст"}));
   expect(errors).toEqual([]);
 });

@@ -78,8 +78,12 @@ npm ci --no-audit --no-fund
 npm test
 npm run build
 PLAYWRIGHT_CHROMIUM_EXECUTABLE_PATH=/usr/bin/chromium npm run test:e2e
+# Repeat against the compiled bundle served by Vite preview:
+PLAYWRIGHT_USE_PREVIEW=1 PLAYWRIGHT_CHROMIUM_EXECUTABLE_PATH=/usr/bin/chromium npm run test:e2e
 ```
 
 `PLAYWRIGHT_CHROMIUM_EXECUTABLE_PATH` is optional. It selects a system Chromium when the cloud image already provides one. Otherwise install the normal Playwright browser with `npx playwright install --with-deps chromium` and omit this variable. The browser configuration uses an isolated local Supabase URL with mocked responses; it never sends test writes to the fallback production project. Run the browser tests without a previously running server on port 4173 so that the test environment settings take effect.
 
 Browser tests cover 320, 390, 768, and 1280 pixel layouts, account-scoped drafts/favorites, offline handling, stale chat requests, duplicate-safe retries, safe search output, group RPC contracts, and forwarding safeguards. These tests do not establish live Supabase authorization, RLS, WebRTC connectivity, push delivery, hardware recording on iOS, or audited E2EE. Test those separately against a development Supabase project with two members and a non-member before rollout.
+
+Reply-history and inline-edit regression tests reproduce the missing encryption-helper failure and ensure both paths work in development and the compiled production bundle. The backend responses in these tests remain mocked; they do not verify a deployed Vercel instance or live Supabase policies.

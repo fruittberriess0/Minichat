@@ -17,7 +17,9 @@ export default defineConfig({
   },
   webServer:{
     env:{VITE_SUPABASE_URL:"http://127.0.0.1:54321",VITE_SUPABASE_ANON_KEY:"minichat-test-public-key"},
-    command:"npm run dev -- --host 127.0.0.1 --port 4173 --strictPort",
+    command:process.env.PLAYWRIGHT_USE_PREVIEW === "1"
+      ? "npm run build && npm run preview -- --host 127.0.0.1 --port 4173 --strictPort"
+      : "npm run dev -- --host 127.0.0.1 --port 4173 --strictPort",
     url:"http://127.0.0.1:4173",
     reuseExistingServer:false,
     timeout:60000

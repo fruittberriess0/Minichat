@@ -19,6 +19,7 @@ if (import.meta.env.PROD) {
   catch (error) { console.debug("Vercel Analytics is not enabled:",error?.message || error); }
 }
 import { escapeHtml, formatTime, initials, appendFormattedText } from "./utils/format.js";
+import { isEncryptedText, hasSharedPassphrase, encryptTextMessage } from "./security/e2ee.js";
 import { initSharedSpace } from "./features/shared-space.js";
 import { initWorkspaceUI } from "./features/workspace-ui.js";
 import { initGroupUI } from "./features/group-ui.js";
