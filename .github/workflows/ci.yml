@@ -13,7 +13,7 @@ jobs:
         with:
           node-version: 22
       - name: Install dependencies
-        run: npm install
+        run: npm ci
       - name: Run source checks and smoke tests
         run: npm run test:source
       - name: Run unit tests

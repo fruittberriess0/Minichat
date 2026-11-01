@@ -14,6 +14,7 @@
 <link rel="stylesheet" href="/src/style.css">
 </head>
 <body>
+<div id="connectionBanner" class="connection-banner hidden" role="status" aria-live="polite"></div>
 
 <section id="loginScreen">
   <div class="login-card">
@@ -22,9 +23,10 @@
     <p class="muted">Ваше маленькое личное пространство</p>
     <form id="loginForm">
       <label for="email">Email</label>
-      <input class="field" id="email" type="email" autocomplete="username" placeholder="you@example.com" required>
+      <input autocapitalize="none" spellcheck="false" class="field" id="email" type="email" autocomplete="username" placeholder="you@example.com" required>
       <label for="password">Пароль</label>
-      <input class="field" id="password" type="password" autocomplete="current-password" placeholder="Ваш пароль" required>
+      <div class="password-field"><input class="field" id="password" type="password" autocomplete="current-password" placeholder="Ваш пароль" required>
+        <button id="passwordVisibilityButton" class="icon-btn" type="button" aria-label="Показать пароль" aria-pressed="false">◉</button></div>
       <button class="btn full" id="loginButton" type="submit">Войти</button>
       <button class="btn secondary full" id="registerButton" type="button">Создать аккаунт</button>
       <button class="btn secondary full" id="magicLinkButton" type="button">Войти по ссылке на email</button>
@@ -44,7 +46,7 @@
       <div class="brand-icon">M</div>
       <div>
         <div class="brand-name">MiniChat <span style="color:var(--accent)">♥</span></div>
-        <div class="brand-sub">Только для вас двоих</div>
+        <div class="brand-sub">Близкие всегда рядом</div>
       </div>
       <div class="sidebar-actions">
         <button class="icon-btn" id="themeButton" title="Переключить тему" type="button" aria-label="Переключить тему">☼</button>
@@ -53,7 +55,7 @@
       </div>
     </div>
     <div class="search-wrap">
-      <input class="field search" id="chatSearch" type="search" placeholder="Поиск чата...">
+      <input class="field search" id="chatSearch" type="search" placeholder="Поиск чата..." aria-label="Поиск чата">
     </div>
     <div class="section-label" style="display:flex;align-items:center;justify-content:space-between">
       <span>Переписки</span>
@@ -63,7 +65,12 @@
         <button class="icon-btn" id="globalSearchButton" type="button" title="Поиск по всем сообщениям" aria-label="Поиск по всем сообщениям">⌕</button>
       </span>
     </div>
-    <div id="chatItems"></div>
+    <div class="chat-filters" role="group" aria-label="Фильтр чатов">
+      <button type="button" data-chat-filter="all" aria-pressed="true">Все</button>
+      <button type="button" data-chat-filter="unread" aria-pressed="false">Непрочитанные</button>
+      <button type="button" data-chat-filter="favorites" aria-pressed="false">Избранные</button>
+    </div>
+    <div id="chatItems" aria-label="Переписки"></div>
     <div class="sidebar-footer">
       <div class="profile-mini" id="profileOpen" role="button" tabindex="0" title="Открыть профиль">
         <div class="avatar" id="miniAvatar">♥</div>
@@ -92,16 +99,22 @@
           <div id="headerStatus">Личная переписка</div>
         </div>
         <button class="icon-btn" id="messageSearchToggle" type="button" title="Поиск по сообщениям" aria-label="Поиск по сообщениям">⌕</button>
-        <button class="icon-btn" id="exportChatButton" type="button" title="Экспортировать переписку" aria-label="Экспортировать переписку">⇩</button>
-        <button class="icon-btn" id="callAudioButton" type="button" title="Голосовой звонок" aria-label="Голосовой звонок">☎</button>
-        <button class="icon-btn" id="callVideoButton" type="button" title="Видеозвонок" aria-label="Видеозвонок">▣</button>
-        <button class="icon-btn" id="sharedAlbumButton" type="button" title="Общий альбом" aria-label="Общий альбом">🖼</button>
-        <button class="icon-btn" id="sharedSpaceButton" type="button" title="Общие задачи, даты и опросы" aria-label="Общее пространство">♥+</button>
-        <button class="icon-btn hidden" id="groupManageButton" type="button" title="Управление группой" aria-label="Управление группой">👥</button>
-        <button class="icon-btn" id="chatStatsButton" type="button" title="Статистика чата" aria-label="Статистика чата">▥</button>
-        <button class="icon-btn" id="selectMessagesButton" type="button" title="Выбрать сообщения" aria-label="Выбрать сообщения">☑</button>
-        <button class="icon-btn hidden" id="deleteSelectedButton" type="button" title="Удалить выбранные" aria-label="Удалить выбранные">🗑</button>
-        <button class="icon-btn" id="chatRefreshButton" type="button" title="Обновить сообщения">↻</button>
+        <details id="chatActions" class="tools-menu">
+          <summary class="icon-btn" aria-label="Действия чата" title="Действия чата">•••</summary>
+          <div class="tools-panel chat-actions-panel">
+            <button class="icon-btn" id="favoriteChatButton" type="button" aria-pressed="false"><span aria-hidden="true">☆</span><span id="favoriteChatLabel">В избранные</span></button>
+        <button class="icon-btn" id="exportChatButton" type="button" title="Экспортировать переписку" aria-label="Экспортировать переписку"><span aria-hidden="true">⇩</span><span>Экспортировать переписку</span></button>
+        <button class="icon-btn" id="callAudioButton" type="button" title="Голосовой звонок" aria-label="Голосовой звонок"><span aria-hidden="true">☎</span><span>Голосовой звонок</span></button>
+        <button class="icon-btn" id="callVideoButton" type="button" title="Видеозвонок" aria-label="Видеозвонок"><span aria-hidden="true">▣</span><span>Видеозвонок</span></button>
+        <button class="icon-btn" id="sharedAlbumButton" type="button" title="Общий альбом" aria-label="Общий альбом"><span aria-hidden="true">🖼</span><span>Общий альбом</span></button>
+        <button class="icon-btn" id="sharedSpaceButton" type="button" title="Общие задачи, даты и опросы" aria-label="Общее пространство"><span aria-hidden="true">♥+</span><span>Общие задачи, даты и опросы</span></button>
+        <button class="icon-btn hidden" id="groupManageButton" type="button" title="Управление группой" aria-label="Управление группой"><span aria-hidden="true">👥</span><span>Управление группой</span></button>
+        <button class="icon-btn" id="chatStatsButton" type="button" title="Статистика чата" aria-label="Статистика чата"><span aria-hidden="true">▥</span><span>Статистика чата</span></button>
+        <button class="icon-btn" id="selectMessagesButton" type="button" title="Выбрать сообщения" aria-label="Выбрать сообщения"><span aria-hidden="true">☑</span><span>Выбрать сообщения</span></button>
+        <button class="icon-btn hidden" id="deleteSelectedButton" type="button" title="Удалить выбранные" aria-label="Удалить выбранные"><span aria-hidden="true">🗑</span><span>Удалить выбранные</span></button>
+        <button class="icon-btn" id="chatRefreshButton" type="button" title="Обновить сообщения"><span aria-hidden="true">↻</span><span>Обновить сообщения</span></button>
+          </div>
+        </details>
       </header>
       <div id="messageSearchBar" class="search-wrap hidden">
         <input class="field search" id="messageSearchInput" type="search" placeholder="Найти в этой переписке..." aria-label="Поиск по сообщениям">
@@ -119,17 +132,23 @@
           <button class="icon-btn" id="cancelReplyButton" type="button" title="Отменить ответ">×</button>
         </div>
         <div class="composer">
-          <button class="icon-btn" id="emojiButton" type="button" title="Добавить эмодзи" aria-label="Добавить эмодзи">☺</button>
-          <button class="icon-btn" id="stickerButton" type="button" title="Стикеры" aria-label="Стикеры">🌟</button>
-          <button class="icon-btn" id="formatToggleButton" type="button" title="Форматирование" aria-label="Форматирование">Aa</button>
-          <button class="icon-btn" id="attachmentButton" type="button" title="Прикрепить файлы">＋</button>
-          <button class="icon-btn" id="recordButton" type="button" title="Записать голосовое сообщение" aria-label="Записать голосовое сообщение">🎙</button>
-          <button class="icon-btn" id="videoNoteButton" type="button" title="Записать видео-кружок" aria-label="Записать видео-кружок">📹</button>
-          <input id="fileInput" type="file" multiple accept="image/*,.pdf,.doc,.docx,.txt,.zip,.mp3,.mp4,.webm,.ogg">
-          <textarea id="messageInput" rows="1" placeholder="Напиши сообщение..." aria-label="Сообщение"></textarea>
-          <select id="messageExpirySelect" class="field" title="Срок жизни сообщения" aria-label="Срок жизни сообщения" style="width:auto;max-width:94px;padding:6px 3px;font-size:11px;flex-shrink:0">
+          <details id="composerTools" class="tools-menu composer-tools">
+            <summary class="icon-btn" aria-label="Вложения и инструменты" title="Вложения и инструменты">＋</summary>
+            <div class="tools-panel composer-tools-panel">
+          <button class="icon-btn" id="emojiButton" type="button" title="Добавить эмодзи" aria-label="Добавить эмодзи"><span aria-hidden="true">☺</span><span>Добавить эмодзи</span></button>
+          <button class="icon-btn" id="stickerButton" type="button" title="Стикеры" aria-label="Стикеры"><span aria-hidden="true">🌟</span><span>Стикеры</span></button>
+          <button class="icon-btn" id="formatToggleButton" type="button" title="Форматирование" aria-label="Форматирование"><span aria-hidden="true">Aa</span><span>Форматирование</span></button>
+          <button class="icon-btn" id="attachmentButton" type="button" title="Прикрепить файлы"><span aria-hidden="true">＋</span><span>Прикрепить файлы</span></button>
+          <button class="icon-btn" id="recordButton" type="button" title="Записать голосовое сообщение" aria-label="Записать голосовое сообщение"><span aria-hidden="true">🎙</span><span>Записать голосовое сообщение</span></button>
+          <button class="icon-btn" id="videoNoteButton" type="button" title="Записать видео-кружок" aria-label="Записать видео-кружок"><span aria-hidden="true">📹</span><span>Записать видео-кружок</span></button>
+          <label class="expiry-label" for="messageExpirySelect">Исчезающие сообщения</label>
+          <select id="messageExpirySelect" class="field" title="Срок жизни сообщения" aria-label="Срок жизни сообщения" >
             <option value="0">Навсегда</option><option value="3600">1 час</option><option value="86400">1 день</option><option value="604800">7 дней</option>
           </select>
+            </div>
+          </details>
+          <input id="fileInput" type="file" multiple accept="image/*,.pdf,.doc,.docx,.txt,.zip,.mp3,.mp4,.webm,.ogg">
+          <textarea id="messageInput" rows="1" placeholder="Напиши сообщение..." aria-label="Сообщение"></textarea>
           <button class="icon-btn" id="sendButton" type="button" title="Отправить сообщение">➤</button>
         </div>
         <div id="emojiPicker" class="hidden" style="display:flex;flex-wrap:wrap;gap:5px;padding:8px 2px" aria-label="Выбор эмодзи"></div>
@@ -137,15 +156,16 @@
         <div id="formatToolbar" class="format-toolbar hidden" aria-label="Форматирование сообщения">
           <button class="btn secondary small-btn" id="boldTextButton" type="button" title="Жирный">**B**</button>
           <button class="btn secondary small-btn" id="italicTextButton" type="button" title="Курсив">*I*</button>
-          <button class="btn secondary small-btn" id="codeTextButton" type="button" title="Моноширинный">\x60code\x60</button>
+          <button class="btn secondary small-btn" id="codeTextButton" type="button" title="Моноширинный">&#96;code&#96;</button>
         </div>
         <div id="uploadProgressWrap" class="hidden" style="padding:7px 4px 0">
           <div id="uploadProgressLabel" class="small muted" role="status">Подготовка файлов…</div>
           <progress id="uploadProgress" max="100" style="width:100%;height:5px"></progress>
         </div>
         <div id="recordingStatus" class="small muted hidden" role="status" style="padding:6px 4px 0">Запись голосового сообщения… нажми 🎙 ещё раз для отправки</div>
+        <button id="stopRecordingButton" type="button" class="btn full hidden">■ Завершить и отправить запись</button>
         <div class="small muted" id="e2eeStatus" style="padding:5px 5px 0" aria-live="polite"></div>
-        <div class="small muted" style="padding:7px 5px 0">Enter — отправить · Shift + Enter — новая строка · Ctrl/⌘ + K — поиск</div>
+        <div class="small muted composer-hint" style="padding:7px 5px 0">Enter — отправить · Shift + Enter — новая строка · Ctrl/⌘ + K — поиск</div>
       </div>
     </section>
 
@@ -182,8 +202,6 @@
       <label for="languageSelect">Язык</label>
       <select id="languageSelect" class="field"><option value="ru">Русский</option><option value="en">English</option></select>
       <button class="btn secondary full" id="enableNotificationsButton" type="button" style="margin-top:12px">Включить уведомления</button>
-      <button class="btn secondary full" id="e2eeToggleButton" type="button" style="margin-top:8px">Настроить общий ключ шифрования</button>
-      <div class="small muted" id="e2eeSettingsHint" style="margin-top:6px">Экспериментальное шифрование новых текстовых сообщений. Общий ключ передавайте вне MiniChat.</div>
       <button class="btn secondary full" id="setPinButton" type="button" style="margin-top:8px">Настроить PIN-код приложения</button>
       <button class="btn secondary full" id="viewSessionsButton" type="button" style="margin-top:8px">Активные устройства</button>
       <button class="btn secondary full" id="signOutAllButton" type="button" style="margin-top:8px">Выйти на всех устройствах</button>
@@ -272,6 +290,44 @@
   <button id="mediaViewerNext" class="icon-btn viewer-nav viewer-next" type="button" aria-label="Следующее фото">›</button>
 </div>
 <div id="notice" class="hidden" role="status"></div>
+
+<dialog id="createChatDialog" class="workspace-dialog" aria-labelledby="createChatTitle">
+  <header class="dialog-header"><div><p class="eyebrow">НАЧНИТЕ ОБЩЕНИЕ</p><h2 id="createChatTitle">Новая переписка</h2></div><button class="icon-btn" type="button" data-close-dialog aria-label="Закрыть">×</button></header>
+  <form id="createChatForm">
+    <label for="createChatType">Тип переписки</label>
+    <select class="field" id="createChatType"><option value="direct">Личный чат</option><option value="group">Группа</option></select>
+    <div id="createChatTitleWrap" class="hidden"><label for="createChatName">Название группы</label><input class="field" id="createChatName" maxlength="80" placeholder="Например: наши планы"></div>
+    <label for="createChatMembers">Участники</label>
+    <textarea class="field" id="createChatMembers" rows="3" maxlength="1200" required placeholder="Имя пользователя или email"></textarea>
+    <p class="small muted" id="createChatHint">Укажи одного зарегистрированного пользователя.</p>
+    <p id="createChatStatus" class="status-line" role="status"></p>
+    <button class="btn full" id="createChatSubmit" type="submit">Создать переписку</button>
+  </form>
+</dialog>
+<dialog id="forwardDialog" class="workspace-dialog" aria-labelledby="forwardTitle">
+  <header class="dialog-header"><div><p class="eyebrow">ПОДЕЛИТЬСЯ ВАЖНЫМ</p><h2 id="forwardTitle">Переслать сообщение</h2></div><button class="icon-btn" type="button" data-close-dialog aria-label="Закрыть">×</button></header>
+  <p class="small muted">Пересылается текст сообщения или название вложения. Сам файл не копируется.</p>
+  <form id="forwardForm">
+    <label for="forwardQuery">Выбери переписку</label><input id="forwardQuery" class="field" type="search" placeholder="Найти чат" aria-label="Найти чат для пересылки">
+    <div id="forwardTargets" class="library-results forward-targets"></div>
+    <button id="forwardSubmit" class="btn full" type="submit" disabled>Переслать</button>
+  </form>
+</dialog>
+<dialog id="groupDialog" class="workspace-dialog" aria-labelledby="groupDialogTitle">
+  <header class="dialog-header"><div><p class="eyebrow">ВАША КОМАНДА</p><h2 id="groupDialogTitle">Управление группой</h2></div><button class="icon-btn" type="button" data-close-dialog aria-label="Закрыть">×</button></header>
+  <p id="groupStatus" class="status-line" role="status" aria-live="polite"></p>
+  <div id="groupAdminControls" class="hidden">
+    <form id="groupRenameForm" class="group-form"><label for="groupName">Название группы</label><div class="library-search"><input class="field" id="groupName" maxlength="80" required><button class="btn" type="submit">Сохранить</button></div></form>
+    <form id="groupAddForm" class="group-form"><label for="groupNewMember">Добавить участника</label><div class="library-search"><input class="field" id="groupNewMember" maxlength="200" required placeholder="Имя или email"><button class="btn" type="submit">Добавить</button></div></form>
+  </div>
+  <h3 class="group-members-title">Участники</h3><div id="groupMembers" class="library-results"></div>
+</dialog>
+<dialog id="messageLibraryDialog" class="workspace-dialog library-dialog" aria-labelledby="messageLibraryTitle">
+  <header class="dialog-header"><div><p class="eyebrow">ВАЖНОЕ ПОД РУКОЙ</p><h2 id="messageLibraryTitle">Поиск сообщений</h2></div><button class="icon-btn" type="button" data-close-dialog aria-label="Закрыть">×</button></header>
+  <form id="messageLibraryForm" class="library-search"><input id="messageLibraryQuery" class="field" type="search" maxlength="200" placeholder="Что найти?" aria-label="Текст для поиска"><button class="btn" type="submit">Найти</button></form>
+  <p id="messageLibraryStatus" class="status-line" role="status" aria-live="polite"></p>
+  <div id="messageLibraryResults" class="library-results"></div>
+</dialog>
 
 <script type="module" src="/src/main.js"></script>
 </body>

@@ -16,7 +16,7 @@ Private chat UI built with Vite, Supabase Auth/Database/Storage/Realtime, and a 
 ## Local development
 
 1. Install Node.js 22.12 or later.
-2. Run `npm install`.
+2. Run `npm ci`.
 3. Copy `.env.example` to `.env.local`.
 4. Fill the public Supabase URL, publishable key, and Storage bucket for a separate **development** project.
 5. Review and apply migrations to that development project before testing schema-dependent features.
@@ -56,3 +56,30 @@ See `supabase/functions/README.md`. Deploy `push-notify`, configure VAPID and we
 - GitHub Actions runs these checks and a production Vite build on pushes and pull requests.
 
 The repository changes have not yet been fully verified against a live Supabase test project. Migration SQL is committed to GitHub but is not applied automatically to the existing production database.
+
+## Mobile workspace update
+
+- All chat actions are in **•••** in the conversation header: calls, shared album, tasks, group management, export, selection, and refresh. The panel scrolls on short screens.
+- **＋** beside the composer opens emoji, stickers, formatting, file attachments, audio/video recording, and message lifetime. A separate stop-and-send button remains visible during recording.
+- The profile opens from the chat list on phones and scrolls through all settings. The login screen also scrolls on short viewports.
+- Chat filters show all, unread, or favorite chats. Favorites are pinned first and saved for the current account on this browser; they do not sync between devices.
+- Drafts are isolated by account and chat. Offline sends keep the text in the composer. Failed sends survive switching chats in the same tab and can be retried manually with the same message UUID to avoid duplicate inserts. Failed sends are **not** a persistent offline outbox: keep the tab open until delivered.
+- Chat creation, message search, saved messages, forwarding, and group administration use dialogs. Group controls respect the displayed membership role; the existing Supabase RPCs still enforce permissions on the server.
+- Forwarding copies text or the attachment name, not the file itself. Encrypted source messages cannot be forwarded. Forwarding to an E2EE-enabled target requires its device keys and does not fall back to plaintext.
+- Export includes only currently loaded history and is labeled accordingly.
+
+No database migration is introduced by this update. Existing RPCs and tables from the committed migrations are still required for backend features. Older unscoped drafts are intentionally not imported across accounts on shared devices.
+
+### Validation in the cloud environment
+
+```sh
+cd /workspace/Minichat
+npm ci --no-audit --no-fund
+npm test
+npm run build
+PLAYWRIGHT_CHROMIUM_EXECUTABLE_PATH=/usr/bin/chromium npm run test:e2e
+```
+
+`PLAYWRIGHT_CHROMIUM_EXECUTABLE_PATH` is optional. It selects a system Chromium when the cloud image already provides one. Otherwise install the normal Playwright browser with `npx playwright install --with-deps chromium` and omit this variable. The browser configuration uses an isolated local Supabase URL with mocked responses; it never sends test writes to the fallback production project. Run the browser tests without a previously running server on port 4173 so that the test environment settings take effect.
+
+Browser tests cover 320, 390, 768, and 1280 pixel layouts, account-scoped drafts/favorites, offline handling, stale chat requests, duplicate-safe retries, safe search output, group RPC contracts, and forwarding safeguards. These tests do not establish live Supabase authorization, RLS, WebRTC connectivity, push delivery, hardware recording on iOS, or audited E2EE. Test those separately against a development Supabase project with two members and a non-member before rollout.

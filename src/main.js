@@ -20,6 +20,9 @@ if (import.meta.env.PROD) {
 }
 import { escapeHtml, formatTime, initials, appendFormattedText } from "./utils/format.js";
 import { initSharedSpace } from "./features/shared-space.js";
+import { initWorkspaceUI } from "./features/workspace-ui.js";
+import { initGroupUI } from "./features/group-ui.js";
+import { createWorkspaceStore, filterChats } from "./state/workspace.js";
 const $ = id => document.getElementById(id);
 // Set this to the public half of your VAPID key pair after generating it.
 const WEB_PUSH_VAPID_PUBLIC_KEY = import.meta.env.VITE_WEB_PUSH_VAPID_PUBLIC_KEY || "";
@@ -156,7 +159,6 @@ let typingTimer = null;
 let lastTypingBroadcastAt = 0;
 let replyToMessage = null;
 let sending = false;
-let loadingMessages = false;
 let loadingOlderMessages = false;
 let hasMoreMessages = false;
 const MESSAGE_PAGE_SIZE = 50;
@@ -164,26 +166,23 @@ let lastRenderedChatId = null;
 let profilesById = {};
 let otherProfile = null;
 let messageSearchTerm = "";
-const DRAFTS_KEY = "minichat-drafts-v1";
+let chatFilter = "all";
+let chatReady = false;
+let recordingEpoch = 0;
+let chatOpenVersion = 0;
+let messageLoadVersion = 0;
+const pendingMessages = new Map();
+function workspaceStore() { return currentUser ? createWorkspaceStore(currentUser.id) : null; }
 const EMOJIS = ["❤️","🥰","😘","😂","😍","😭","😊","😎","🥹","💕","🔥","👍","👎","👏","🙏","✨","🎉","💋","🤍","🫶","🌹","💖","😴","🤗"];
 
-function getDrafts() {
-  try { return JSON.parse(localStorage.getItem(DRAFTS_KEY) || "{}"); }
-  catch { return {}; }
-}
 function saveCurrentDraft() {
-  if (!activeChat) return;
-  const drafts = getDrafts();
-  const value = $("messageInput").value;
-  if (value) drafts[activeChat.id] = value;
-  else delete drafts[activeChat.id];
-  try { localStorage.setItem(DRAFTS_KEY, JSON.stringify(drafts)); } catch (e) {
-    console.warn("Не удалось сохранить черновик:", e);
+  if (!activeChat || !currentUser) return;
+  if (!workspaceStore().saveDraft(activeChat.id, $("messageInput").value)) {
+    showNotice("Не удалось сохранить черновик на устройстве. Не закрывай вкладку.");
   }
 }
 function restoreDraft(chatId) {
-  const drafts = getDrafts();
-  $("messageInput").value = drafts[chatId] || "";
+  $("messageInput").value = workspaceStore()?.draft(chatId) || "";
   $("messageInput").style.height = "42px";
   $("messageInput").style.height = Math.min($("messageInput").scrollHeight, 140) + "px";
 }
@@ -369,6 +368,22 @@ function initializeEmojiPicker() {
   });
 }
 initializeEmojiPicker();
+const STICKERS = ["🥰","😘","😂","😍","🥹","🫶","❤️","💖","🌹","🔥","🎉","🤗"];
+STICKERS.forEach(sticker => {
+  const button = document.createElement("button");
+  button.type = "button";
+  button.className = "sticker-choice";
+  button.textContent = sticker;
+  button.setAttribute("aria-label","Добавить стикер " + sticker);
+  button.addEventListener("click",() => {
+    $("messageInput").value += sticker;
+    saveCurrentDraft();
+    $("stickerPicker").classList.add("hidden");
+    $("messageInput").focus();
+  });
+  $("stickerPicker").append(button);
+});
+$("stickerButton").addEventListener("click",() => $("stickerPicker").classList.toggle("hidden"));
 $("emojiButton").addEventListener("click", () => $("emojiPicker").classList.toggle("hidden"));
 function wrapComposerSelection(delimiter) {
   const input = $("messageInput");
@@ -419,18 +434,20 @@ function exportCurrentChat() {
   link.click();
   link.remove();
   setTimeout(() => URL.revokeObjectURL(url), 1000);
-  showNotice("Экспорт переписки подготовлен.");
+  showNotice("Экспорт загруженных сообщений подготовлен. Для полной истории сначала загрузи более ранние сообщения.",6000);
 }
 
 async function loadMembers() {
   profilesById = {};
   otherProfile = null;
   if (!activeChat) return;
+  const chatId = activeChat.id;
   try {
-    const {data: members} = await sb.from("chat_members").select("user_id").eq("chat_id", activeChat.id);
+    const {data: members} = await sb.from("chat_members").select("user_id").eq("chat_id", chatId);
     const ids = (members || []).map(m => m.user_id);
     if (!ids.length) return;
     const {data: profs} = await sb.from("profiles").select("*").in("id", ids);
+    if (activeChat?.id !== chatId) return;
     (profs || []).forEach(p => profilesById[p.id] = p);
     if (!activeChat.is_group) {
       otherProfile = (profs || []).find(p => p.id !== currentUser.id) || null;
@@ -701,7 +718,7 @@ async function restoreSession() {
     const {data, error} = await sb.auth.getSession();
     if (error) throw error;
     if (data.session?.user) {
-      await initializeUser(data.session.user);
+      if (!isPasswordRecovery) await initializeUser(data.session.user);
     } else {
       setLoggedIn(false);
     }
@@ -719,6 +736,29 @@ sb.auth.onAuthStateChange((event, session) => {
     setLoggedIn(false);
   }
   if (event === "SIGNED_OUT") {
+    saveCurrentDraft();
+    chatOpenVersion++;
+    messageLoadVersion++;
+    cancelRecordings();
+    sending = false;
+    chatReady = false;
+    pendingMessages.clear();
+    chatSummaries = {};
+    profilesById = {};
+    selectedMessageIds.clear();
+    selectionMode = false;
+    chatFilter = "all";
+    document.querySelectorAll("dialog[open]").forEach(dialog => dialog.close());
+    document.querySelectorAll("details[open]").forEach(menu => menu.open = false);
+    ["profilePanel","sharedSpacePanel","deviceSessionsPanel","mediaViewer","appLockScreen","conversation"].forEach(id => $(id).classList.add("hidden"));
+    $("welcome").classList.remove("hidden");
+    $("appPinInput").value = "";
+    $("messageInput").value = "";
+    $("chatSearch").value = "";
+    $("messages").replaceChildren();
+    $("messageLibraryResults").replaceChildren();
+    endOneToOneCall(false);
+    setMobileChatMode(false);
     currentUser = null;
     currentProfile = null;
     e2eeIdentityPromise = null;
@@ -917,10 +957,12 @@ function updateProfileUI() {
 }
 
 function openProfile() {
+  setMobileChatMode(true);
   $("profilePanel").classList.remove("hidden");
 }
 function closeProfile() {
   $("profilePanel").classList.add("hidden");
+  if (!activeChat) setMobileChatMode(false);
 }
 $("profileOpen").addEventListener("click", openProfile);
 $("profileOpen").addEventListener("keydown", e => {
@@ -1022,6 +1064,8 @@ async function loadChats() {
   const ids = [...new Set((memberships || []).map(row => row.chat_id).filter(Boolean))];
   if (!ids.length) {
     chats = [];
+    chatSummaries = {};
+    updateUnreadTitle();
     renderChatList();
     showNotice("Чатов пока нет. Проверь, добавлен ли твой аккаунт в chat_members.");
     return;
@@ -1131,11 +1175,13 @@ function renderChatList() {
   const search = ($("chatSearch").value || "").toLowerCase().trim();
   container.innerHTML = "";
 
-  const filtered = chats.filter(chat => chatTitle(chat).toLowerCase().includes(search));
+  const favorites = workspaceStore()?.favorites() || [];
+  const filtered = filterChats(chats, chatSummaries, favorites, chatFilter, search);
+  document.querySelectorAll("[data-chat-filter]").forEach(button => button.setAttribute("aria-pressed", String(button.dataset.chatFilter === chatFilter)));
   if (!filtered.length) {
     const empty = document.createElement("div");
     empty.className = "empty-chat";
-    empty.textContent = chats.length ? "Ничего не найдено." : "Пока нет доступных чатов.";
+    empty.textContent = chats.length ? (chatFilter === "favorites" ? "Добавляй чаты в избранное через меню •••." : chatFilter === "unread" && !search ? "Все сообщения прочитаны ✨" : "Ничего не найдено.") : "Здесь появятся твои переписки. Нажми ＋, чтобы создать первую.";
     container.appendChild(empty);
     return;
   }
@@ -1143,6 +1189,8 @@ function renderChatList() {
   filtered.forEach(chat => {
     const button = document.createElement("button");
     button.type = "button";
+    button.setAttribute("aria-label", chatTitle(chat));
+    if (activeChat?.id === chat.id) button.setAttribute("aria-current", "true");
     button.className = "chat-item" + (activeChat?.id === chat.id ? " active" : "");
 
     const avatar = document.createElement("div");
@@ -1154,12 +1202,14 @@ function renderChatList() {
 
     const title = document.createElement("div");
     title.className = "chat-item-title";
-    title.textContent = chatTitle(chat);
+    title.textContent = (favorites.includes(chat.id) ? "★ " : "") + chatTitle(chat);
 
     const summary = chatSummaries[chat.id] || {latest:null, unread:0};
     const preview = document.createElement("div");
     preview.className = "chat-item-preview";
-    preview.textContent = summaryPreview(summary.latest);
+    const draft = workspaceStore()?.draft(chat.id);
+    preview.textContent = draft ? "Черновик: " + draft : summaryPreview(summary.latest);
+    preview.classList.toggle("draft-preview", Boolean(draft));
 
     const side = document.createElement("div");
     side.className = "chat-item-side";
@@ -1418,6 +1468,7 @@ async function loadChatPreference(chatId) {
     const {data,error} = await sb.from("chat_preferences").select("muted,wallpaper,message_expiry_seconds")
       .eq("user_id",currentUser.id).eq("chat_id",chatId).maybeSingle();
     if (error) throw error;
+    if (activeChat?.id !== chatId) return;
     currentChatMuted = Boolean(data?.muted);
     $("muteChatToggle").checked = currentChatMuted;
     if (data?.wallpaper) {
@@ -1429,14 +1480,17 @@ async function loadChatPreference(chatId) {
   } catch (error) {
     console.debug("Per-chat settings need the messaging migration:",error?.message || error);
   }
+  if (activeChat?.id !== chatId) return;
   try {
     const {data,error} = await sb.from("chat_preferences").select("e2ee_enabled")
       .eq("user_id",currentUser.id).eq("chat_id",chatId).maybeSingle();
     if (error) throw error;
+    if (activeChat?.id !== chatId) return;
     e2eeSchemaAvailable = true;
     currentChatE2ee = Boolean(data?.e2ee_enabled);
     $("e2eeToggle").checked = currentChatE2ee;
   } catch (error) {
+    if (activeChat?.id !== chatId) return;
     e2eeSchemaAvailable = false;
     currentChatE2ee = false;
     $("e2eeToggle").checked = false;
@@ -1486,7 +1540,29 @@ $("e2eeToggle").addEventListener("change",async event => {
 
 /* Открытие чата и сообщения */
 async function openChat(chat) {
+  if (mediaRecorder || videoRecorder) {
+    showNotice("Сначала заверши запись, чтобы отправить её в текущую переписку.");
+    return;
+  }
+  chatReady = false;
+  $("sendButton").disabled = true;
+  saveCurrentDraft();
+  const version = ++chatOpenVersion;
+  removeRealtime();
   activeChat = chat;
+  messages = [];
+  hasMoreMessages = false;
+  loadingOlderMessages = false;
+  unreadWhileAway = 0;
+  currentChatE2ee = false;
+  currentExpirySeconds = 0;
+  currentChatMuted = false;
+  selectionMode = false;
+  selectedMessageIds.clear();
+  editingMessageId = null;
+  $("selectMessagesButton").textContent = "☑ Выбрать сообщения";
+  updateFavoriteButton();
+  document.querySelectorAll("details.tools-menu").forEach(menu => menu.open = false);
   galleryOverride = null;
   galleryOverrideChatId = null;
   replyToMessage = null;
@@ -1508,18 +1584,25 @@ async function openChat(chat) {
   $("messageSearchBar").classList.add("hidden");
   renderChatList();
   await Promise.all([loadMembers(), loadMessages()]);
+  if (version !== chatOpenVersion || activeChat?.id !== chat.id) return;
   await loadChatPreference(chat.id);
+  if (version !== chatOpenVersion || activeChat?.id !== chat.id) return;
+  chatReady = true;
+  $("sendButton").disabled = sending;
+  $("e2eeStatus").textContent = currentChatE2ee ? "🔒 Экспериментальное E2EE · новые текстовые сообщения шифруются" : "";
   await markMessagesAsRead();
+  if (version !== chatOpenVersion || activeChat?.id !== chat.id) return;
   if (chatSummaries[chat.id]) chatSummaries[chat.id].unread = 0;
+  updateUnreadTitle();
   renderChatList();
   subscribeToMessages();
   updateScrollButton();
-  $("messageInput").focus();
+  if (!matchMedia("(pointer:coarse)").matches) $("messageInput").focus();
 }
 
 async function loadMessages() {
-  if (!activeChat || loadingMessages) return;
-  loadingMessages = true;
+  if (!activeChat) return;
+  const loadVersion = ++messageLoadVersion;
   const chatId = activeChat.id;
 
   try {
@@ -1531,19 +1614,18 @@ async function loadMessages() {
       .limit(MESSAGE_PAGE_SIZE + 1);
 
     if (error) throw error;
-    if (activeChat?.id !== chatId) return;
+    if (activeChat?.id !== chatId || loadVersion !== messageLoadVersion) return;
     const newestFirst = data || [];
     hasMoreMessages = newestFirst.length > MESSAGE_PAGE_SIZE;
-    messages = newestFirst.slice(0, MESSAGE_PAGE_SIZE).reverse();
+    messages = [...newestFirst.slice(0, MESSAGE_PAGE_SIZE).reverse(), ...[...pendingMessages.values()].filter(message => message.chat_id === chatId)];
     lastRenderedChatId = chatId;
     renderMessages();
     forceScrollDown();
     await refreshReactions();
   } catch (error) {
+    if (activeChat?.id !== chatId || loadVersion !== messageLoadVersion) return;
     $("messages").innerHTML = '<div class="empty-chat">Не удалось загрузить сообщения.<br>' +
       escapeHtml(safeError(error)) + '</div>';
-  } finally {
-    loadingMessages = false;
   }
 }
 
@@ -1551,6 +1633,8 @@ async function loadOlderMessages() {
   if (!activeChat || loadingOlderMessages || !hasMoreMessages || !messages.length) return;
   loadingOlderMessages = true;
   const chatId = activeChat.id;
+  const openVersion = chatOpenVersion;
+  const loadVersion = messageLoadVersion;
   const firstMessage = messages[0];
   const container = $("messages");
   const oldHeight = container.scrollHeight;
@@ -1564,7 +1648,7 @@ async function loadOlderMessages() {
       .order("created_at", {ascending:false})
       .limit(MESSAGE_PAGE_SIZE + 1);
     if (error) throw error;
-    if (activeChat?.id !== chatId) return;
+    if (activeChat?.id !== chatId || openVersion !== chatOpenVersion || loadVersion !== messageLoadVersion) return;
     const newestFirst = data || [];
     hasMoreMessages = newestFirst.length > MESSAGE_PAGE_SIZE;
     const older = newestFirst.slice(0, MESSAGE_PAGE_SIZE).reverse();
@@ -1574,9 +1658,10 @@ async function loadOlderMessages() {
     renderMessages();
     container.scrollTop = oldTop + (container.scrollHeight - oldHeight);
   } catch (error) {
+    if (activeChat?.id !== chatId || openVersion !== chatOpenVersion) return;
     showNotice("Не удалось загрузить старые сообщения: " + safeError(error), 5000);
   } finally {
-    loadingOlderMessages = false;
+    if (openVersion === chatOpenVersion) loadingOlderMessages = false;
   }
 }
 $("messages").addEventListener("scroll", () => {
@@ -1735,6 +1820,7 @@ function renderMessages() {
 
     const bubble = document.createElement("div");
     bubble.className = "message-bubble";
+    if (STICKERS.includes(visibleMessageText(message))) bubble.classList.add("message-sticker-bubble");
 
     if (!own) {
       const author = document.createElement("div");
@@ -1961,7 +2047,7 @@ function renderMessages() {
     bubble.appendChild(footer);
 
     const actions = document.createElement("div");
-    actions.style.cssText = "display:flex;gap:5px;justify-content:flex-end;margin-top:5px";
+    actions.className = "message-actions";
 
     if (own && message.__failed) {
       const retryBtn = document.createElement("button");
@@ -2045,6 +2131,7 @@ function renderMessages() {
 
 
     }
+    actions.querySelectorAll("button[title]").forEach(button => button.setAttribute("aria-label",button.title));
     bubble.appendChild(actions);
     row.appendChild(bubble);
     container.appendChild(row);
@@ -2072,6 +2159,7 @@ function addOrUpdateMessage(msg) {
 }
 
 async function refreshReactions() {
+  const chatId = activeChat?.id;
   const ids = messages.filter(m => m.id && !String(m.id).startsWith("local-")).map(m => m.id);
   if (!ids.length) { reactionsByMessage = {}; return; }
   try {
@@ -2083,6 +2171,7 @@ async function refreshReactions() {
       next[row.message_id].counts[row.reaction] = (next[row.message_id].counts[row.reaction] || 0) + 1;
       if (row.user_id === currentUser?.id) next[row.message_id].mine.push(row.reaction);
     });
+    if (activeChat?.id !== chatId) return;
     reactionsByMessage = next;
     renderMessages();
   } catch (error) {
@@ -2110,7 +2199,7 @@ async function toggleReaction(message, reaction) {
 }
 
 async function forwardMessage(message) {
-  if (message?.encrypted_payload) {
+  if (message?.encrypted_payload || message?.content?.startsWith("MCH-E2EE1:")) {
     showNotice("Пересылка зашифрованного сообщения пока отключена: оно не должно попадать в другой чат открытым текстом.");
     return;
   }
@@ -2118,36 +2207,27 @@ async function forwardMessage(message) {
     showNotice("Для пересылки нужен другой доступный чат.");
     return;
   }
-  const targets = chats.filter(chat => chat.id !== activeChat?.id);
-  const promptText = targets.map((chat,index) => (index + 1) + ". " + chatTitle(chat)).join("\n");
-  const choice = prompt("Куда переслать? Введи номер чата:\n" + promptText, "1");
-  if (choice === null) return;
-  const target = targets[Number(choice) - 1];
-  if (!target) { showNotice("Номер чата не найден."); return; }
+  const userId = currentUser.id;
+  const target = await workspaceUI.forwardTarget(message.chat_id);
+  if (!target || currentUser?.id !== userId) return;
   try {
-    let forwardContent = message.__plainContent ?? message.content ?? "";
-  if (isEncryptedText(forwardContent)) {
-    forwardContent = await decryptTextMessage(forwardContent,activeChat?.id);
-    if (forwardContent === null) {
-      showNotice("Для пересылки зашифрованного сообщения нужен правильный общий ключ.");
-      return;
+    // Do not silently downgrade an encrypted destination to plain text.
+    const {data:preference,error:preferenceError} = await sb.from("chat_preferences").select("e2ee_enabled")
+      .eq("user_id",userId).eq("chat_id",target.id).maybeSingle();
+    if (preferenceError) throw preferenceError;
+    const content = message.content || (message.file_name ? "Пересланный файл: " + message.file_name : "Пересланное сообщение");
+    const row = {id:crypto.randomUUID(),chat_id:target.id,sender_id:userId,content,message_type:"text"};
+    if (preference?.e2ee_enabled) {
+      row.encrypted_payload = await encryptTextForChat(content,target.id);
+      row.content = E2EE_LOCK_TEXT;
     }
-  }
-  const targetContent = await encryptTextMessage(forwardContent,target.id);
-  const row = {
-      chat_id:target.id,
-      sender_id:currentUser.id,
-      content:targetContent || (message.file_name ? "Пересланный файл: " + message.file_name : "Пересланное сообщение"),
-      message_type:"text"
-    };
+    if (currentUser?.id !== userId) return;
     const {error} = await sb.from("messages").insert(row);
     if (error) throw error;
     showNotice("Сообщение переслано ❤️");
     await loadChatSummaries();
     renderChatList();
-  } catch (error) {
-    showNotice("Не удалось переслать: " + safeError(error), 6000);
-  }
+  } catch (error) { showNotice("Не удалось переслать: " + safeError(error),6000); }
 }
 
 function forceScrollDown() {
@@ -2205,6 +2285,9 @@ $("cancelReplyButton").addEventListener("click", () => {
 
 async function persistPendingMessage(pending) {
   if (!pending || !pending.__payload || !currentUser) return false;
+  const sender = currentUser;
+  const senderId = sender.id;
+  if (pending.sender_id !== senderId) return false;
   pending.__pending = true;
   pending.__failed = false;
   pending.__error = "";
@@ -2215,13 +2298,25 @@ async function persistPendingMessage(pending) {
       const encrypted_payload = await encryptTextForChat(clearText,pending.chat_id);
       pending.__payload = {...pending.__payload,content:E2EE_LOCK_TEXT,encrypted_payload};
     }
-    const {data: inserted, error} = await sb.from("messages").insert(pending.__payload).select().single();
+    if (currentUser !== sender) return false;
+    let {data: inserted, error} = await sb.from("messages").insert(pending.__payload).select().single();
+    if (currentUser !== sender) return false;
+    // Reuse the client UUID on retries, including an uncertain network result.
+    if (error?.code === "23505") {
+      const result = await sb.from("messages").select("*").eq("id",pending.__payload.id).eq("sender_id",currentUser.id).single();
+      inserted = result.data;
+      error = result.error;
+    }
     if (error) throw error;
+    if (!inserted) throw new Error("Сервер не вернул отправленное сообщение");
+    if (currentUser !== sender) return false;
+    pendingMessages.delete(pending.id);
     messages = messages.filter(item => item.id !== pending.id);
     if (activeChat?.id === pending.chat_id) addOrUpdateMessage(inserted);
     loadChatSummaries().then(renderChatList).catch(error => console.debug("Chat summary refresh skipped:", error?.message || error));
     return true;
   } catch (error) {
+    if (currentUser !== sender) return false;
     pending.__pending = false;
     pending.__failed = true;
     pending.__error = safeError(error);
@@ -2233,19 +2328,23 @@ async function persistPendingMessage(pending) {
 
 async function retryFailedMessage(message) {
   if (!message?.__failed || sending) return;
+  const sender = currentUser;
   sending = true;
   await persistPendingMessage(message);
-  sending = false;
+  if (currentUser === sender) sending = false;
 }
 
 async function sendMessage() {
-  if (!currentUser || !activeChat || sending) return;
+  if (!currentUser || !activeChat || sending || !chatReady) return;
+  if (!navigator.onLine) { saveCurrentDraft(); showNotice("Нет сети. Текст остаётся в черновике — отправь его после подключения.",6000); return; }
   const input = $("messageInput");
   const content = input.value.trim();
   if (!content) return;
 
+  const userAtSend = currentUser;
   const chatIdAtSend = activeChat.id;
   const row = {
+    id:crypto.randomUUID(),
     chat_id: chatIdAtSend,
     sender_id: currentUser.id,
     content,
@@ -2254,7 +2353,7 @@ async function sendMessage() {
     ...(currentExpirySeconds ? {expires_at:new Date(Date.now() + currentExpirySeconds * 1000).toISOString()} : {})
   };
   const pending = {
-    id:"local-" + Date.now() + "-" + Math.floor(Math.random() * 1000000),
+    id:"local-" + row.id,
     chat_id:chatIdAtSend,
     sender_id:currentUser.id,
     content,
@@ -2268,6 +2367,7 @@ async function sendMessage() {
     __payload:row
   };
 
+  pendingMessages.set(pending.id,pending);
   messages.push(pending);
   renderMessages();
   forceScrollDown();
@@ -2279,14 +2379,15 @@ async function sendMessage() {
   sending = true;
   $("sendButton").disabled = true;
   await persistPendingMessage(pending);
+  if (currentUser !== userAtSend) return;
   sending = false;
-  $("sendButton").disabled = false;
+  $("sendButton").disabled = !chatReady;
   if (activeChat?.id === chatIdAtSend) input.focus();
 }
 $("sendButton").addEventListener("click", sendMessage);
 
 $("messageInput").addEventListener("keydown", event => {
-  if (event.key === "Enter" && !event.shiftKey) {
+  if (event.key === "Enter" && !event.shiftKey && !event.isComposing && event.keyCode !== 229) {
     event.preventDefault();
     sendMessage();
   }
@@ -2324,6 +2425,7 @@ $("messageInput").addEventListener("input", () => {
   input.style.height = Math.min(input.scrollHeight, 140) + "px";
   saveCurrentDraft();
   if (input.value.trim()) broadcastTyping();
+  renderChatList();
 });
 
 /* Редактирование, удаление и закрепление */
@@ -2495,7 +2597,7 @@ async function uploadOneFile(originalFile, chatId, replyId, forcedMessageType = 
 }
 
 async function uploadFiles(files, forcedMessageType = null) {
-  if (!currentUser || !activeChat || !files?.length) return;
+  if (!currentUser || !activeChat || !files?.length || !chatReady) return;
   const targetChatId = activeChat.id;
   const replyId = replyToMessage?.id && !String(replyToMessage.id).startsWith("local-") ? replyToMessage.id : null;
   const fileList = [...files].filter(Boolean);
@@ -2541,17 +2643,36 @@ $("fileInput").addEventListener("change", event => {
   uploadFiles(event.target.files);
 });
 
+function cancelRecordings() {
+  recordingEpoch++;
+  if (mediaRecorder?.state === "recording") mediaRecorder.stop();
+  if (videoRecorder?.state === "recording") videoRecorder.stop();
+  recordStream?.getTracks().forEach(track => track.stop());
+  videoStream?.getTracks().forEach(track => track.stop());
+  $("recordingStatus").classList.add("hidden");
+  $("stopRecordingButton").classList.add("hidden");
+}
+$("stopRecordingButton").addEventListener("click",() => {
+  if (mediaRecorder?.state === "recording") mediaRecorder.stop();
+  if (videoRecorder?.state === "recording") videoRecorder.stop();
+});
 async function toggleVoiceRecording() {
   if (mediaRecorder && mediaRecorder.state === "recording") {
     mediaRecorder.stop();
     return;
   }
+  if (!currentUser || !activeChat || !chatReady) return;
+  if (videoRecorder?.state === "recording") { showNotice("Сначала заверши видеозапись."); return; }
+  const epoch = recordingEpoch;
+  const userId = currentUser.id;
+  const recordingChatId = activeChat.id;
   if (!navigator.mediaDevices?.getUserMedia || typeof MediaRecorder === "undefined") {
     showNotice("Запись аудио не поддерживается этим браузером.");
     return;
   }
   try {
     recordStream = await navigator.mediaDevices.getUserMedia({audio:true});
+    if (epoch !== recordingEpoch || currentUser?.id !== userId || activeChat?.id !== recordingChatId) { recordStream.getTracks().forEach(track => track.stop()); return; }
     recordedChunks = [];
     mediaRecorder = new MediaRecorder(recordStream);
     mediaRecorder.addEventListener("dataavailable", event => {
@@ -2565,22 +2686,30 @@ async function toggleVoiceRecording() {
       recordStream = null;
       mediaRecorder = null;
       $("recordingStatus").classList.add("hidden");
-      $("recordButton").textContent = "🎙";
-      if (file.size) await uploadFiles([file]);
+      $("recordButton").textContent = "🎙 Записать голосовое";
+      $("stopRecordingButton").classList.add("hidden");
+      if (file.size && epoch === recordingEpoch && currentUser?.id === userId && activeChat?.id === recordingChatId) await uploadFiles([file]);
     });
     mediaRecorder.start();
     $("recordingStatus").classList.remove("hidden");
-    $("recordButton").textContent = "■";
+    $("recordingStatus").textContent = "Идёт запись голосового сообщения…";
+    $("stopRecordingButton").classList.remove("hidden");
+    $("recordButton").textContent = "■ Завершить запись";
     showNotice("Идёт запись. Нажми ■, чтобы отправить голосовое.");
   } catch (error) {
     recordStream?.getTracks().forEach(track => track.stop());
     recordStream = null;
+    mediaRecorder = null;
     showNotice("Не удалось начать запись: " + safeError(error), 6000);
   }
 }
 $("recordButton").addEventListener("click", toggleVoiceRecording);
 
 async function toggleVideoNoteRecording() {
+  if (!currentUser || !activeChat || !chatReady) return;
+  const epoch = recordingEpoch;
+  const userId = currentUser.id;
+  const recordingChatId = activeChat.id;
   if (videoRecorder?.state === "recording") {
     videoRecorder.stop();
     return;
@@ -2598,6 +2727,7 @@ async function toggleVideoNoteRecording() {
       audio:true,
       video:{facingMode:"user",width:{ideal:480},height:{ideal:480},frameRate:{ideal:24,max:30}}
     });
+    if (epoch !== recordingEpoch || currentUser?.id !== userId || activeChat?.id !== recordingChatId) { videoStream.getTracks().forEach(track => track.stop()); return; }
     videoChunks = [];
     const preferred = ["video/webm;codecs=vp8,opus","video/webm","video/mp4"];
     const supported = preferred.find(type => MediaRecorder.isTypeSupported?.(type));
@@ -2613,13 +2743,15 @@ async function toggleVideoNoteRecording() {
       videoStream = null;
       videoRecorder = null;
       $("recordingStatus").classList.add("hidden");
-      $("videoNoteButton").textContent = "📹";
-      if (file.size) await uploadFiles([file],"video_note");
+      $("videoNoteButton").textContent = "📹 Записать видео-кружок";
+      $("stopRecordingButton").classList.add("hidden");
+      if (file.size && epoch === recordingEpoch && currentUser?.id === userId && activeChat?.id === recordingChatId) await uploadFiles([file],"video_note");
     });
     videoRecorder.start();
     $("recordingStatus").textContent = "Запись видео-кружка… нажми ■ ещё раз, чтобы отправить";
     $("recordingStatus").classList.remove("hidden");
-    $("videoNoteButton").textContent = "■";
+    $("stopRecordingButton").classList.remove("hidden");
+    $("videoNoteButton").textContent = "■ Завершить запись";
     showNotice("Идёт запись видео-кружка. Нажми ■, чтобы отправить.");
   } catch (error) {
     videoStream?.getTracks().forEach(track => track.stop());
@@ -3066,101 +3198,16 @@ $("pinnedBanner").addEventListener("click", () => {
 $("selectMessagesButton").addEventListener("click", () => {
   selectionMode = !selectionMode;
   if (!selectionMode) selectedMessageIds.clear();
-  $("selectMessagesButton").textContent = selectionMode ? "×" : "☑";
+  $("selectMessagesButton").textContent = selectionMode ? "× Отменить выбор" : "☑ Выбрать сообщения";
   $("selectMessagesButton").title = selectionMode ? "Отменить выбор" : "Выбрать сообщения";
   renderMessages();
 });
 $("deleteSelectedButton").addEventListener("click", deleteSelectedMessages);
 
-async function manageGroup() {
-  if (!activeChat?.is_group || !currentUser) return;
-  const chatId = activeChat.id;
-  const action = prompt("Управление группой:\\n1 — добавить участника\\n2 — изменить роль\\n3 — удалить участника\\n4 — переименовать группу", "1");
-  if (!action) return;
-  try {
-    if (action === "1") {
-      const query = prompt("Email или точное имя нового участника:");
-      if (!query?.trim()) return;
-      const {data:users,error:userError} = await sb.rpc("find_chat_user",{p_query:query.trim()});
-      if (userError) throw userError;
-      const found = users?.[0];
-      if (!found?.user_id) throw new Error("Пользователь не найден");
-      const {error} = await sb.rpc("add_chat_member",{p_chat_id:chatId,p_user_id:found.user_id});
-      if (error) throw error;
-      showNotice("Участник добавлен.");
-    } else if (action === "2" || action === "3") {
-      const {data:members,error} = await sb.from("chat_members").select("user_id,role").eq("chat_id",chatId);
-      if (error) throw error;
-      const choices = (members || []).filter(item => item.user_id !== currentUser.id && item.role !== "owner");
-      if (!choices.length) { showNotice("Нет участников, которых можно изменить."); return; }
-      const labels = choices.map((item,index) => {
-        const profile = profilesById[item.user_id];
-        return (index+1)+". "+(profile?.username || item.user_id.slice(0,8))+" ["+item.role+"]";
-      }).join("\\n");
-      const choice = prompt("Выбери участника:\\n"+labels,"1");
-      if (choice === null) return;
-      const member = choices[Number(choice)-1];
-      if (!member) { showNotice("Неверный номер."); return; }
-      if (action === "2") {
-        const role = prompt("Роль: admin или member","member");
-        if (!["admin","member"].includes(role)) { showNotice("Роль должна быть admin или member."); return; }
-        const {error:roleError} = await sb.rpc("update_chat_member_role",{p_chat_id:chatId,p_user_id:member.user_id,p_role:role});
-        if (roleError) throw roleError;
-        showNotice("Роль участника обновлена.");
-      } else {
-        if (!confirm("Удалить участника из группы?")) return;
-        const {error:removeError} = await sb.rpc("remove_chat_member",{p_chat_id:chatId,p_user_id:member.user_id});
-        if (removeError) throw removeError;
-        showNotice("Участник удалён.");
-      }
-    } else if (action === "4") {
-      const title = prompt("Новое название группы:",chatTitle(activeChat));
-      if (!title?.trim()) return;
-      const {error} = await sb.rpc("rename_chat",{p_chat_id:chatId,p_title:title.trim()});
-      if (error) throw error;
-      activeChat.title = title.trim();
-      await loadChats();
-      $("headerTitle").textContent = chatTitle(activeChat);
-      showNotice("Название группы изменено.");
-    }
-    await loadMembers();
-  } catch (error) {
-    showNotice("Управление группой требует миграции Supabase или прав администратора: "+safeError(error),7000);
-  }
-}
+function manageGroup() { groupUI.open(activeChat); }
 $("groupManageButton").addEventListener("click",manageGroup);
 
-async function createChatFromPrompt() {
-  if (!currentUser) return;
-  const group = confirm("Создать группу? Нажми «Отмена», если нужен личный чат.");
-  const raw = prompt(group ? "Введи имена или email участников через запятую:" : "Введи имя пользователя или email:");
-  if (!raw?.trim()) return;
-  const queries = [...new Set(raw.split(",").map(item => item.trim()).filter(Boolean))];
-  if (!queries.length) return;
-  const memberIds = [];
-  const names = [];
-  try {
-    for (const query of queries) {
-      const {data,error} = await sb.rpc("find_chat_user", {p_query:query});
-      if (error) throw error;
-      const user = data?.[0];
-      if (!user?.user_id) throw new Error("Не найден пользователь: " + query);
-      memberIds.push(user.user_id);
-      names.push(user.username || query);
-    }
-    const title = group ? (prompt("Название группы:") || names.join(", ")).trim() : "";
-    const {data:chatId,error} = await sb.rpc("create_chat_with_members", {
-      p_title:title, p_is_group:group, p_member_ids:memberIds
-    });
-    if (error) throw error;
-    await loadChats();
-    const created = chats.find(chat => chat.id === chatId);
-    if (created) await openChat(created);
-    showNotice(group ? "Группа создана ❤️" : "Чат создан ❤️");
-  } catch (error) {
-    showNotice("Создание чата требует миграции Supabase и доступа к RPC: " + safeError(error), 7000);
-  }
-}
+function createChatFromPrompt() { workspaceUI.createChat(); }
 $("newChatButton").addEventListener("click", createChatFromPrompt);
 
 async function saveMessageForLater(message) {
@@ -3182,35 +3229,7 @@ async function saveMessageForLater(message) {
     showNotice("Сохранённые сообщения требуют миграции Supabase: " + safeError(error), 6000);
   }
 }
-async function showSavedMessages() {
-  try {
-    const {data:saved,error} = await sb.from("saved_messages").select("message_id,created_at")
-      .eq("user_id",currentUser.id).order("created_at",{ascending:false}).limit(100);
-    if (error) throw error;
-    const ids = (saved || []).map(item => item.message_id);
-    if (!ids.length) { showNotice("Пока нет сохранённых сообщений."); return; }
-    const {data:rows,error:rowsError} = await sb.from("messages").select("id,chat_id,content,created_at")
-      .in("id",ids);
-    if (rowsError) throw rowsError;
-    const byId = new Map((rows || []).map(row => [row.id,row]));
-    const choices = ids.map((id,index) => {
-      const row = byId.get(id);
-      const chat = chats.find(item => item.id === row?.chat_id);
-      return (index + 1) + ". [" + (chat ? chatTitle(chat) : "Чат") + "] " + (row?.content || "Вложение").slice(0,90);
-    }).join("\n");
-    const choice = prompt("Сохранённые сообщения:\n" + choices + "\n\nВведи номер, чтобы открыть:", "1");
-    if (choice === null) return;
-    const row = byId.get(ids[Number(choice) - 1]);
-    const chat = chats.find(item => item.id === row?.chat_id);
-    if (!row || !chat) { showNotice("Не удалось найти это сообщение."); return; }
-    await openChat(chat);
-    let guard = 0;
-    while (!messages.some(item => item.id === row.id) && hasMoreMessages && guard++ < 40) await loadOlderMessages();
-    jumpToMessage(row.id);
-  } catch (error) {
-    showNotice("Сохранённые сообщения требуют миграции Supabase: " + safeError(error), 6000);
-  }
-}
+function showSavedMessages() { workspaceUI.library("saved"); }
 $("savedMessagesButton").addEventListener("click", showSavedMessages);
 
 async function deleteSelectedMessages() {
@@ -3225,7 +3244,7 @@ async function deleteSelectedMessages() {
     messages = messages.filter(message => !selectedMessageIds.has(message.id));
     selectedMessageIds.clear();
     selectionMode = false;
-    $("selectMessagesButton").textContent = "☑";
+    $("selectMessagesButton").textContent = "☑ Выбрать сообщения";
     $("selectMessagesButton").title = "Выбрать сообщения";
     renderMessages();
     showNotice("Выбранные сообщения удалены.");
@@ -3237,7 +3256,7 @@ function updateSelectionControls() {
   const button = $("deleteSelectedButton");
   if (!button) return;
   button.classList.toggle("hidden", !selectionMode);
-  button.textContent = selectedMessageIds.size ? "🗑 " + selectedMessageIds.size : "🗑";
+  button.textContent = "🗑 Удалить выбранные" + (selectedMessageIds.size ? " (" + selectedMessageIds.size + ")" : "");
   button.disabled = selectedMessageIds.size === 0;
 }
 function updatePinnedBanner() {
@@ -3263,30 +3282,7 @@ async function showChatStats() {
 }
 $("chatStatsButton").addEventListener("click", showChatStats);
 
-$("globalSearchButton").addEventListener("click", async () => {
-  const query = prompt("Найти текст во всех переписках:");
-  if (!query?.trim()) return;
-  try {
-    const {data,error} = await sb.rpc("search_chat_messages", {p_query:query.trim()});
-    if (error) throw error;
-    if (!data?.length) { showNotice("Ничего не найдено."); return; }
-    const choices = data.slice(0,30).map((item,index) => {
-      const chat = chats.find(chatItem => chatItem.id === item.chat_id);
-      return (index + 1) + ". [" + (chat ? chatTitle(chat) : "Чат") + "] " + (item.content || "Вложение").slice(0,90);
-    }).join("\n");
-    const choice = prompt("Результаты поиска:\n" + choices + "\n\nВведи номер:", "1");
-    if (choice === null) return;
-    const result = data[Number(choice) - 1];
-    const chat = chats.find(chatItem => chatItem.id === result?.chat_id);
-    if (!result || !chat) return;
-    await openChat(chat);
-    let guard = 0;
-    while (!messages.some(item => item.id === result.id) && hasMoreMessages && guard++ < 50) await loadOlderMessages();
-    jumpToMessage(result.id);
-  } catch (error) {
-    showNotice("Глобальный поиск требует миграции Supabase: " + safeError(error), 6000);
-  }
-});
+$("globalSearchButton").addEventListener("click", () => workspaceUI.library("search"));
 
 $("chatRefreshButton").addEventListener("click", async () => {
   await loadMessages();
@@ -3294,7 +3290,10 @@ $("chatRefreshButton").addEventListener("click", async () => {
 });
 
 $("backButton").addEventListener("click", () => {
+  if (mediaRecorder || videoRecorder) { showNotice("Сначала заверши запись."); return; }
   saveCurrentDraft();
+  chatOpenVersion++;
+  messageLoadVersion++;
   activeChat = null;
   replyToMessage = null;
   removeRealtime();
@@ -3321,6 +3320,62 @@ initSharedSpace({
   safeError,
   onAlbum:openSharedAlbum
 });
+
+function updateFavoriteButton() {
+  const favorite = workspaceStore()?.favorites().includes(activeChat?.id) || false;
+  $("favoriteChatButton").setAttribute("aria-pressed",String(favorite));
+  $("favoriteChatLabel").textContent = favorite ? "Убрать из избранного" : "В избранные";
+}
+$("favoriteChatButton").addEventListener("click",() => {
+  if (!activeChat) return;
+  if (!workspaceStore()?.toggleFavorite(activeChat.id)) showNotice("Не удалось сохранить избранное на устройстве.");
+  updateFavoriteButton();
+  renderChatList();
+});
+document.querySelectorAll("[data-chat-filter]").forEach(button => button.addEventListener("click",() => {
+  chatFilter = button.dataset.chatFilter;
+  renderChatList();
+}));
+const groupUI = initGroupUI({
+  $,sb,getUser:() => currentUser,
+  onChanged:async chat => {
+    await loadChats();
+    if (activeChat?.id === chat.id) {
+      activeChat.title = chat.title;
+      $("headerTitle").textContent = chatTitle(chat);
+      await loadMembers();
+    }
+  }
+});
+const workspaceUI = initWorkspaceUI({
+  $, sb, getUser:() => currentUser, getChats:() => chats, chatTitle,
+  onCreated:async chatId => {
+    await loadChats();
+    const chat = chats.find(item => item.id === chatId);
+    if (chat) await openChat(chat);
+    showNotice("Переписка создана ❤️");
+  },
+  openMessage:async row => {
+    try {
+      const chat = chats.find(item => item.id === row.chat_id);
+      if (!chat) return;
+      await openChat(chat);
+      let pages = 0;
+      while (activeChat?.id === chat.id && !messages.some(item => item.id === row.id) && hasMoreMessages && pages++ < 50) await loadOlderMessages();
+      if (activeChat?.id === chat.id) jumpToMessage(row.id);
+    } catch (error) { showNotice("Не удалось открыть сообщение: " + safeError(error)); }
+  }
+});
+function updateConnectionBanner() {
+  const offline = !navigator.onLine;
+  document.body.classList.toggle("is-offline",offline);
+  $("connectionBanner").classList.toggle("hidden",!offline);
+  $("connectionBanner").textContent = offline ? "Нет подключения · черновики сохраняются на этом устройстве" : "";
+}
+window.addEventListener("offline",updateConnectionBanner);
+window.addEventListener("online",() => { updateConnectionBanner(); showNotice("Подключение восстановлено. Неотправленные сообщения можно повторить вручную."); });
+window.addEventListener("pagehide",saveCurrentDraft);
+updateConnectionBanner();
 
 /* Запуск приложения */
 restoreSession();

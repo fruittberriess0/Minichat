@@ -4,7 +4,8 @@ import { readFileSync } from "node:fs";
 
 const html = readFileSync(new URL("../index.html", import.meta.url), "utf8");
 const app = readFileSync(new URL("../src/main.js", import.meta.url), "utf8");
-const source = html + "\n" + app;
+const workspaceUI = readFileSync(new URL("../src/features/workspace-ui.js", import.meta.url), "utf8");
+const source = html + "\n" + app + "\n" + workspaceUI;
 
 test("core auth and messaging controls exist", () => {
   for (const id of ["loginForm","email","password","app","chatItems","messages","messageInput","sendButton"]) {
