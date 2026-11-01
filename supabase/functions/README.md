@@ -15,3 +15,9 @@ The application shell and notification event handler are in place. Sending pushe
 6. Test with two users and remove subscriptions that receive 404/410 responses.
 
 The function intentionally sends generic notification text instead of message contents to reduce sensitive lock-screen exposure. Do not log subscription payloads or VAPID secrets.
+
+## Vault-backed setup
+
+Migration runtime_storage_and_push creates a private media bucket, member-scoped Storage policies and a database webhook using pg_net. Server push configuration may be stored in Supabase Vault under minichat_vapid_public, minichat_vapid_private, minichat_vapid_subject, minichat_push_webhook and minichat_project_url. The browser receives only the public VAPID key.
+
+The Edge Function reads the four notification values through a service-role-only RPC. Anonymous and signed-in browser clients cannot call that RPC. The webhook sends only the message ID to this project's own Edge Function; push providers receive only an encrypted generic notification. No chat ID, user ID, message ID, private file URL or message text is included in the push payload. Supported endpoint hosts are the browser push services operated by Google, Mozilla, Apple and Microsoft. The function verifies the stored message before sending and removes subscriptions returning 404/410.

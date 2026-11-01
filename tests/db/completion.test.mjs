@@ -108,4 +108,17 @@ test('full-history search is scoped to membership and matches a partial word',as
   assert.equal((await asUser(outsider,"select * from public.search_messages_in_chat($1,'Прив')",[chat])).rows.length,0);
   assert.equal((await asUser(b,"select * from public.search_messages_in_chat($1,'П')",[chat])).rows.length,0);
 });
+test('private media: uploader and peer can read, outsider cannot access or forge paths',async()=>{
+  const name=a+'/'+chat+'/test.txt';
+  await asUser(a,"insert into storage.objects(bucket_id,name) values('chat-media',$1)",[name]);
+  await db.query("insert into public.messages(chat_id,sender_id,content,message_type,media_path) values($1,$2,'','file',$3)",[chat,a,name]);
+  assert.equal((await asUser(b,'select * from storage.objects where name=$1',[name])).rows.length,1);
+  assert.equal((await asUser(outsider,'select * from storage.objects where name=$1',[name])).rows.length,0);
+  await assert.rejects(asUser(b,"insert into storage.objects(bucket_id,name) values('chat-media',$1)",[a+'/'+chat+'/spoof.txt']),/row-level security/);
+  await assert.rejects(asUser(outsider,'select public.get_minichat_push_configuration()'),/permission denied/);
+});
+test('anonymous callers cannot execute chat management or device helpers',async()=>{
+  const checks=(await db.query("select has_function_privilege('anon','public.can_manage_chat(uuid)','execute') as manage,has_function_privilege('anon','public.touch_device_session(uuid,text)','execute') as device")).rows[0];
+  assert.equal(checks.manage,false);assert.equal(checks.device,false);
+});
 test.after(()=>db.close());

@@ -860,6 +860,8 @@ $("registerButton").addEventListener("click", async () => {
 
 async function initializeUser(user) {
   currentUser = user;
+  const {data:{session}}=await sb.auth.getSession();
+  if(session?.access_token) await sb.realtime.setAuth(session.access_token);
   outbox = createOutbox(localStorage,user.id);
   startPresenceUpdates();
   setLoggedIn(true);
