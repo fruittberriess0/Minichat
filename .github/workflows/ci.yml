@@ -1,7 +1,7 @@
 name: MiniChat checks
 on:
   push:
-    branches: [main, "feature/**"]
+    branches: [main, dev, "feature/**"]
   pull_request:
     branches: [main]
 jobs:
@@ -13,11 +13,13 @@ jobs:
         with:
           node-version: 22
       - name: Install dependencies
-        run: npm install
+        run: npm ci
       - name: Run source checks and smoke tests
         run: npm run test:source
       - name: Run unit tests
         run: npm run test:unit
+      - name: Verify database access and activities
+        run: npm run test:db
       - name: Install Chromium for Playwright
         run: npx playwright install --with-deps chromium
       - name: Run browser smoke tests

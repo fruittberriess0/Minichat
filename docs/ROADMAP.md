@@ -1,23 +1,14 @@
-# MiniChat rollout notes
+# Следующие шаги запуска
 
-## Present in source
-- Paginated messages and day separators.
-- Realtime typing broadcast and online Presence (with last-seen fallback).
-- Chat list previews, timestamps and unread badges.
-- Scroll-to-latest button and reply-to-original navigation.
-- Theme toggle, drafts, search, chat text export and keyboard search shortcut.
-- PWA manifest/service worker shell and notification-click handler.
-- Migration source for reactions, saved messages, chat preferences, push subscriptions, roles, indexes and secure chat-creation helper.
-- Source syntax/smoke checks in GitHub Actions.
+Основные функции списка реализованы в исходниках. Сводка по каждой функции находится в [FEATURES.md](FEATURES.md), история изменений — в [CHANGELOG.md](../CHANGELOG.md).
 
-## Next implementation stages
-1. Apply and verify the optional Supabase migration in a backed-up development project first.
-2. Finish reaction counts, saved messages, mute preferences and chat-creation UX against the migration.
-3. Add real Web Push subscription management and a protected Edge Function with VAPID secrets; test unsubscribe and invalid endpoints.
-4. Complete media upload UX, photo viewer and voice recording, then test on iOS Safari and desktop.
-5. Move the single-file page into Vite modules without switching production until the preview deployment passes.
-6. Add integration tests against a disposable Supabase project and verify RLS with two members and a non-member.
-7. Design E2EE and WebRTC separately; do not retrofit them as unreviewed UI-only options.
+1. Создать отдельный Supabase-проект для dev и выполнить bootstrap-dev.sql для пустой базы, затем миграции 001–006 и chat_completion по порядку. На 2026-11-01 в подключённой рабочей базе обнаружены только четыре исходные таблицы, а история миграций пуста. Применять только последнюю миграцию нельзя.
+2. Настроить приватный Storage, доступ API к новым таблицам, Realtime и Supabase Auth для тестового адреса.
+3. Включить pg_cron до новой миграции, если требуется удалять просроченные строки при закрытых клиентах.
+4. Добавить отдельные Preview-переменные VITE_SUPABASE_URL, VITE_SUPABASE_ANON_KEY и VITE_SUPABASE_MEDIA_BUCKET в Vercel. Preview защищён от использования рабочей базы по умолчанию.
+5. Подтвердить доступ подключения Vercel к команде существующего проекта и открыть превью ветки dev.
+6. Проверить два реальных устройства: доставку и чтение, Presence, запись голоса, загрузку/скачивание файлов, игры, опросы, видео, потери сети и авторизацию постороннего.
+7. Настроить VAPID, Edge Function и Database Webhook для push; проверить получение с закрытой вкладкой.
+8. Выпускать в main после успешной проверки превью и отдельного согласования переноса миграций на рабочую базу.
 
-## Production caveat
-The repository migration file is not a live database migration. The PWA install/offline shell works independently, while push notifications require backend setup. The current CSP needs an inline-script allowance until the app's inline JavaScript is extracted to files.
+Текущий проект уже разбит на HTML, CSS и JavaScript-модули и использует Vite. Вариант полностью без сборки требует отдельного изменения способа подключения библиотек и конфигурации окружений.

@@ -91,6 +91,7 @@
           <h2 id="headerTitle">Наш чат</h2>
           <div id="headerStatus">Личная переписка</div>
         </div>
+        <div class="chat-header-actions" aria-label="Действия чата">
         <button class="icon-btn" id="messageSearchToggle" type="button" title="Поиск по сообщениям" aria-label="Поиск по сообщениям">⌕</button>
         <button class="icon-btn" id="exportChatButton" type="button" title="Экспортировать переписку" aria-label="Экспортировать переписку">⇩</button>
         <button class="icon-btn" id="callAudioButton" type="button" title="Голосовой звонок" aria-label="Голосовой звонок">☎</button>
@@ -102,12 +103,14 @@
         <button class="icon-btn" id="selectMessagesButton" type="button" title="Выбрать сообщения" aria-label="Выбрать сообщения">☑</button>
         <button class="icon-btn hidden" id="deleteSelectedButton" type="button" title="Удалить выбранные" aria-label="Удалить выбранные">🗑</button>
         <button class="icon-btn" id="chatRefreshButton" type="button" title="Обновить сообщения">↻</button>
+        </div>
       </header>
       <div id="messageSearchBar" class="search-wrap hidden">
         <input class="field search" id="messageSearchInput" type="search" placeholder="Найти в этой переписке..." aria-label="Поиск по сообщениям">
         <div class="small muted" id="messageSearchCount" style="padding:7px 3px 0" aria-live="polite"></div>
       </div>
       <button id="pinnedBanner" class="hidden" type="button" style="width:100%;text-align:left;padding:10px 15px;border:0;border-bottom:1px solid var(--line);background:var(--panel2);color:var(--text)">📌 <span id="pinnedBannerText">Закреплённое сообщение</span></button>
+      <div id="connectionStatus" class="connection-status hidden" role="status"></div>
       <div id="messages" aria-live="polite">
         <div class="empty-chat">Выбери чат, чтобы увидеть сообщения.</div>
       </div>
@@ -126,9 +129,9 @@
           <button class="icon-btn" id="recordButton" type="button" title="Записать голосовое сообщение" aria-label="Записать голосовое сообщение">🎙</button>
           <button class="icon-btn" id="videoNoteButton" type="button" title="Записать видео-кружок" aria-label="Записать видео-кружок">📹</button>
           <input id="fileInput" type="file" multiple accept="image/*,.pdf,.doc,.docx,.txt,.zip,.mp3,.mp4,.webm,.ogg">
-          <textarea id="messageInput" rows="1" placeholder="Напиши сообщение..." aria-label="Сообщение"></textarea>
+          <textarea id="messageInput" rows="1" maxlength="10000" placeholder="Напиши сообщение..." aria-label="Сообщение"></textarea>
           <select id="messageExpirySelect" class="field" title="Срок жизни сообщения" aria-label="Срок жизни сообщения" style="width:auto;max-width:94px;padding:6px 3px;font-size:11px;flex-shrink:0">
-            <option value="0">Навсегда</option><option value="3600">1 час</option><option value="86400">1 день</option><option value="604800">7 дней</option>
+            <option value="0">Навсегда</option><option value="300">5 минут</option><option value="3600">1 час</option><option value="86400">1 день</option><option value="604800">7 дней</option>
           </select>
           <button class="icon-btn" id="sendButton" type="button" title="Отправить сообщение">➤</button>
         </div>
@@ -145,7 +148,7 @@
         </div>
         <div id="recordingStatus" class="small muted hidden" role="status" style="padding:6px 4px 0">Запись голосового сообщения… нажми 🎙 ещё раз для отправки</div>
         <div class="small muted" id="e2eeStatus" style="padding:5px 5px 0" aria-live="polite"></div>
-        <div class="small muted" style="padding:7px 5px 0">Enter — отправить · Shift + Enter — новая строка · Ctrl/⌘ + K — поиск</div>
+        <div class="small muted" style="padding:7px 5px 0">Enter — отправить · ↑ — изменить последнее · Esc — закрыть · Ctrl/⌘ + K — поиск</div>
       </div>
     </section>
 
@@ -169,12 +172,19 @@
       <div style="border-top:1px solid var(--line);margin:16px 0 10px"></div>
       <label for="accentColorInput">Цвет акцента</label>
       <input id="accentColorInput" type="color" value="#40d6bf" style="width:100%;height:38px;border:0;background:transparent">
+      <label for="bubbleColorInput">Цвет моих сообщений</label>
+      <input id="bubbleColorInput" type="color" value="#176c65" style="width:100%;height:38px;border:0;background:transparent">
+      <button id="resetBubbleColorButton" class="btn secondary small-btn" type="button">Цвет по теме</button>
       <label for="fontSizeRange">Размер текста</label>
       <input id="fontSizeRange" type="range" min="13" max="19" value="16" style="width:100%">
       <label for="wallpaperSelect">Обои переписки</label>
       <select id="wallpaperSelect" class="field">
         <option value="dots">Точки</option><option value="plain">Однотонные</option><option value="hearts">Мягкий узор</option>
       </select>
+      <label for="wallpaperImageInput">Своя картинка для этого чата</label>
+      <input id="wallpaperImageInput" type="file" accept="image/png,image/jpeg,image/webp" class="field">
+      <div class="small muted">Сохраняется на этом устройстве.</div>
+      <button id="clearWallpaperImage" class="btn secondary small-btn" type="button">Убрать картинку</button>
       <label style="display:flex;align-items:center;gap:8px;margin-top:12px"><input id="soundToggle" type="checkbox" checked> Звук новых сообщений</label>
       <label style="display:flex;align-items:center;gap:8px;margin-top:8px"><input id="muteChatToggle" type="checkbox"> Без звука в этом чате</label>
       <label style="display:flex;align-items:center;gap:8px;margin-top:8px"><input id="e2eeToggle" type="checkbox"> Экспериментальное E2EE</label>
@@ -229,28 +239,40 @@
 <section id="sharedSpacePanel" class="shared-space-panel hidden" role="dialog" aria-modal="true" aria-labelledby="sharedSpaceTitle">
   <div class="shared-space-card">
     <header class="shared-space-header">
-      <div><h2 id="sharedSpaceTitle">Наше пространство ❤️</h2><p class="muted">Задачи, события, даты и опросы</p></div>
+      <div><h2 id="sharedSpaceTitle">Наше пространство ❤️</h2><p class="muted">Заметки, планы, игры и видео для вас двоих</p></div>
       <button id="sharedSpaceClose" class="icon-btn" type="button" aria-label="Закрыть">×</button>
     </header>
     <form id="sharedItemForm" class="shared-item-form">
       <label for="sharedItemType">Что добавить?</label>
       <select id="sharedItemType" class="field">
         <option value="task">Задача</option>
+        <option value="note">Общая заметка</option>
         <option value="event">Событие в календаре</option>
         <option value="anniversary">Наша дата</option>
         <option value="poll">Опрос</option>
+        <option value="countdown">Обратный отсчёт</option>
+        <option value="tictactoe">Крестики-нолики</option>
+        <option value="hangman">Виселица</option>
+        <option value="youtube">Смотреть YouTube вместе</option>
       </select>
       <label for="sharedItemTitle">Название / вопрос</label>
       <input id="sharedItemTitle" class="field" maxlength="120" required placeholder="Например: куда поедем в выходные?">
-      <label for="sharedItemBody">Описание или варианты опроса через запятую</label>
+      <label for="sharedItemBody">Текст, варианты опроса через запятую или ссылка YouTube</label>
       <textarea id="sharedItemBody" class="field" rows="2" maxlength="1200" placeholder="Добавь детали или варианты через запятую"></textarea>
       <label for="sharedItemDue">Дата / срок (необязательно)</label>
-      <input id="sharedItemDue" class="field" type="date">
+      <input id="sharedItemDue" class="field" type="datetime-local">
       <div class="shared-item-actions">
         <button class="btn" type="submit">Добавить</button>
         <button class="btn secondary" id="shareLocationButton" type="button">📍 Поделиться местоположением</button>
       </div>
     </form>
+    <section id="watchPlayerWrap" class="watch-player-wrap hidden" aria-label="Совместный просмотр">
+      <div class="shared-item-top"><h3 id="watchTitle">Смотрим вместе</h3><button id="watchLeave" type="button" class="btn secondary small-btn">Выйти из просмотра</button></div>
+      <iframe id="watchPlayer" title="Совместный просмотр YouTube" src="about:blank" allow="autoplay; encrypted-media; picture-in-picture" allowfullscreen referrerpolicy="strict-origin-when-cross-origin"></iframe>
+      <div class="watch-controls"><button id="watchPlay" type="button" class="btn">▶ Воспроизвести у обоих</button><button id="watchPause" type="button" class="btn secondary">Пауза у обоих</button></div>
+      <label for="watchPosition">Начать с секунды (необязательно)</label><input id="watchPosition" type="number" min="0" max="604800" class="field" placeholder="Продолжить с текущего места">
+      <p id="watchStatus" class="small muted" role="status">Нажми ▶, чтобы присоединиться к просмотру.</p>
+    </section>
     <div id="sharedSpaceStatus" class="status-line" role="status"></div>
     <div id="sharedSpaceList" class="shared-space-list"></div>
   </div>

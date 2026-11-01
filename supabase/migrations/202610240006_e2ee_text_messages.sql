@@ -57,4 +57,5 @@ create policy e2ee_devices_delete_self on public.e2ee_devices
   for delete to authenticated
   using (user_id = auth.uid());
 
+grant select,insert,update,delete on public.e2ee_devices to authenticated;
 commit;

@@ -1,6 +1,6 @@
 "use strict";
-const CACHE_NAME = "minichat-shell-v1";
-const SHELL_URLS = ["/", "/index.html", "/manifest.webmanifest", "/icons/icon.svg"];
+const CACHE_NAME = "minichat-shell-dev";
+const SHELL_URLS = /* PRECACHE */ ["/", "/index.html", "/manifest.webmanifest", "/icons/icon.svg"];
 self.addEventListener("install", event => {
   event.waitUntil((async () => {
     const cache = await caches.open(CACHE_NAME);
@@ -11,7 +11,7 @@ self.addEventListener("install", event => {
 self.addEventListener("activate", event => {
   event.waitUntil((async () => {
     const keys = await caches.keys();
-    await Promise.all(keys.filter(key => key !== CACHE_NAME).map(key => caches.delete(key)));
+    await Promise.all(keys.filter(key => key.startsWith("minichat-shell-") && key !== CACHE_NAME).map(key => caches.delete(key)));
     await self.clients.claim();
   })());
 });
@@ -19,6 +19,7 @@ self.addEventListener("fetch", event => {
   const request = event.request;
   const url = new URL(request.url);
   if (request.method !== "GET" || url.origin !== self.location.origin) return;
+  if (url.pathname.startsWith("/src/") || url.pathname.startsWith("/@") || url.pathname.startsWith("/node_modules/")) return;
   if (url.pathname.startsWith("/rest/") || url.pathname.startsWith("/storage/") || url.pathname.startsWith("/auth/")) return;
   if (request.mode === "navigate") {
     event.respondWith((async () => {
@@ -60,7 +61,11 @@ self.addEventListener("push", event => {
 });
 self.addEventListener("notificationclick", event => {
   event.notification.close();
-  const target = new URL(event.notification.data?.url || "/", self.location.origin).href;
+  let target = self.location.origin + "/";
+  try {
+    const candidate = new URL(event.notification.data?.url || "/",self.location.origin);
+    if(candidate.origin === self.location.origin) target=candidate.href;
+  } catch {}
   event.waitUntil((async () => {
     const windows = await self.clients.matchAll({type:"window", includeUncontrolled:true});
     for (const client of windows) {

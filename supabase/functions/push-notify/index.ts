@@ -72,7 +72,7 @@ Deno.serve(async request => {
   const notification = JSON.stringify({
     title:"MiniChat ❤️",
     body:"У тебя новое сообщение",
-    url:"/",
+    url:"/?chat=" + encodeURIComponent(message.chat_id),
     tag:"minichat-chat-" + String(message.chat_id).slice(0,24)
   });
 

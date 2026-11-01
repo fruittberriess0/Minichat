@@ -20,6 +20,123 @@ if (import.meta.env.PROD) {
 }
 import { escapeHtml, formatTime, initials, appendFormattedText } from "./utils/format.js";
 import { initSharedSpace } from "./features/shared-space.js";
+import { createOutbox, insertOnce, mergePending } from "./features/outbox.js";
+import { readChatHistory } from "./features/export.js";
+import { isEncryptedText, hasSharedPassphrase, encryptTextMessage, decryptTextMessage } from "./security/e2ee.js";
+import { messageStatus } from "./features/receipts.js";
+let outbox = null;
+let flushingOutbox = false;
+let activityChannel = null;
+let receipts = [];
+let firstUnreadId = null;
+let pinnedMessage = null;
+let serverSearchResults = null;
+let searchRevision = 0;
+let searchTimer = null;
+let readInFlight = false;
+let refreshInFlight = false;
+let pendingInserts = new Set();
+let nextRetryAt = 0;
+let reconnectDelay = 2000;
+let reconnectTimer = null;
+let expiryTimer = null;
+function chatIsVisible() {
+  return Boolean(activeChat && document.visibilityState === "visible" &&
+    $("appLockScreen").classList.contains("hidden") && $("profilePanel").classList.contains("hidden"));
+}
+function atLatest() {
+  const box = $("messages");
+  return box.scrollHeight - box.scrollTop - box.clientHeight < 140;
+}
+function queuedMessages() {
+  try { return outbox?.list() || []; }
+  catch (error) { console.warn("Outbox read failed",error); return []; }
+}
+function updateConnectionStatus() {
+  const count = queuedMessages().length;
+  $("connectionStatus").textContent = !navigator.onLine ? "Нет сети · сообщения сохраняются на устройстве" :
+    count ? `В очереди: ${count} · повторяем отправку` : realtimeReady ? "" : currentUser ? "Подключаемся…" : "";
+  $("connectionStatus").classList.toggle("hidden", !$("connectionStatus").textContent);
+}
+async function flushOutbox() {
+  if (!outbox || !currentUser || !navigator.onLine || flushingOutbox || Date.now() < nextRetryAt) return;
+  const userId = currentUser.id;
+  flushingOutbox = true;
+  try {
+    for (const row of queuedMessages()) {
+      if (currentUser?.id !== userId) break;
+      if (row.expires_at && new Date(row.expires_at).getTime() <= Date.now()) {
+        outbox.remove(row.id);
+        messages = messages.filter(item => item.id !== row.id);
+        continue;
+      }
+      const pending = messages.find(item => item.id === row.id) || row;
+      if (!await persistPendingMessage(pending)) { nextRetryAt = Date.now() + 15000; break; }
+    }
+  } finally { flushingOutbox = false; updateConnectionStatus(); }
+}
+async function loadReceipts(chatId = activeChat?.id) {
+  if (!chatId) return;
+  const ids = messages.filter(row => row.chat_id === chatId && !row.__payload).map(row => row.id);
+  if (!ids.length) return;
+  const {data,error} = await sb.from("message_receipts").select("*").in("message_id",ids);
+  if (!error && activeChat?.id === chatId && JSON.stringify(receipts)!==JSON.stringify(data || [])) {
+    receipts = data || []; renderMessages();
+  }
+}
+async function acknowledgeMessages(rows, read = false) {
+  const ids = rows.filter(row => row.sender_id !== currentUser?.id && !row.__payload &&
+    !row.deleted_at && (!row.expires_at || new Date(row.expires_at).getTime() > Date.now())).map(row => row.id);
+  if (!ids.length || !currentUser) return;
+  const {error} = await sb.rpc("acknowledge_messages",{p_ids:ids.slice(-200),p_read:read});
+  if (error) console.debug("Message receipts unavailable:",error.message);
+}
+async function refreshConnection() {
+  if (!currentUser || !navigator.onLine || refreshInFlight) return;
+  refreshInFlight = true;
+  try {
+    if(!currentProfile) await loadProfile();
+    if(!chats.length) await loadChats();
+    if(!activityChannel) subscribeToActivity();
+    const chatId = activeChat?.id;
+    if (chatId) {
+      const {data,error} = await sb.from("messages").select("*").eq("chat_id",chatId)
+        .is("deleted_at",null).order("created_at",{ascending:false}).order("id",{ascending:false}).limit(MESSAGE_PAGE_SIZE);
+      if (error) throw error;
+      if (activeChat?.id === chatId) {
+        const known=new Map(messages.map(row=>[row.id,row]));
+        const latest=(data || []).map(row=>({...known.get(row.id),...row}));
+        const cutoff = latest.at(-1)?.created_at;
+        const merged=mergePending([...messages.filter(row => !row.__payload && cutoff && row.created_at < cutoff),...latest],queuedMessages(),chatId);
+        if(JSON.stringify(messages)!==JSON.stringify(merged)) {messages=merged;renderMessages();}
+        await acknowledgeMessages(latest);
+        if (chatIsVisible() && atLatest()) await markMessagesAsRead();
+        await loadReceipts(chatId);
+        await refreshReactions();
+      }
+    }
+    await loadChatSummaries();
+    renderChatList();
+    await flushOutbox();
+  } catch (error) { console.debug("Reconnect refresh skipped:",error?.message || error); }
+  finally { refreshInFlight = false; updateConnectionStatus(); }
+}
+function scheduleReconnect() {
+  clearTimeout(reconnectTimer);
+  if (!currentUser || !activeChat || !navigator.onLine) return;
+  reconnectTimer = setTimeout(() => { subscribeToMessages(); }, reconnectDelay);
+  reconnectDelay = Math.min(reconnectDelay * 2,30000);
+}
+function subscribeToActivity() {
+  if (!currentUser) return;
+  if (activityChannel) sb.removeChannel(activityChannel);
+  activityChannel = sb.channel("minichat-inbox:" + currentUser.id)
+    .on("postgres_changes",{event:"INSERT",schema:"public",table:"messages"},async ({new:row}) => {
+      if (row.sender_id === currentUser?.id) return;
+      await acknowledgeMessages([row]);
+      loadChatSummaries().then(renderChatList);
+    }).subscribe();
+}
 const $ = id => document.getElementById(id);
 // Set this to the public half of your VAPID key pair after generating it.
 const WEB_PUSH_VAPID_PUBLIC_KEY = import.meta.env.VITE_WEB_PUSH_VAPID_PUBLIC_KEY || "";
@@ -118,7 +235,8 @@ function startPresenceUpdates() {
 function handlePresenceVisibility() {
   if (document.visibilityState === "visible") {
     touchDeviceSession();
-    if (typeof markMessagesAsRead === "function") markMessagesAsRead();
+    if (chatIsVisible() && atLatest()) markMessagesAsRead();
+    refreshConnection();
     armAppLockTimer();
     if (presenceChannel && currentUser) {
       presenceChannel.track({
@@ -151,6 +269,7 @@ function stopPresenceUpdates() {
 }
 
 let realtimeChannel = null;
+let subscriptionVersion = 0;
 let noticeTimer = null;
 let typingTimer = null;
 let lastTypingBroadcastAt = 0;
@@ -196,6 +315,8 @@ function applyTheme(theme) {
 }
 function initPersonalization() {
   try {
+    const bubbleColor=localStorage.getItem("minichat-bubble-color");
+    if (bubbleColor) applyBubbleColor(bubbleColor);
     const accent = localStorage.getItem("minichat-accent");
     const size = localStorage.getItem("minichat-font-size");
     const wallpaper = localStorage.getItem("minichat-wallpaper") || "dots";
@@ -220,7 +341,15 @@ function initPersonalization() {
 function applyWallpaper(value) {
   const box = $("messages");
   if (!box) return;
-  box.classList.remove("wallpaper-plain","wallpaper-hearts");
+  box.classList.remove("wallpaper-plain","wallpaper-hearts","wallpaper-custom");
+  box.style.removeProperty("--chat-wallpaper");
+  try {
+    const custom=activeChat && localStorage.getItem("minichat-wallpaper-image:"+activeChat.id);
+    if(custom && /^data:image\/(?:webp|jpeg|png);base64,[a-z0-9+/=]+$/i.test(custom)) {
+      box.classList.add("wallpaper-custom");
+      box.style.setProperty("--chat-wallpaper",'url("'+custom+'")');
+    }
+  } catch {}
   if (value === "plain") box.classList.add("wallpaper-plain");
   if (value === "hearts") box.classList.add("wallpaper-hearts");
   try { localStorage.setItem("minichat-wallpaper", value); } catch {}
@@ -265,12 +394,30 @@ $("accentColorInput").addEventListener("input", event => {
   document.documentElement.style.setProperty("--accent", value);
   try { localStorage.setItem("minichat-accent", value); } catch {}
 });
+function applyBubbleColor(color) {
+  if (!/^#[0-9a-f]{6}$/i.test(color)) return;
+  document.documentElement.style.setProperty("--bubble-color",color);
+  const rgb=[1,3,5].map(index=>parseInt(color.slice(index,index+2),16)/255).map(value=>value<=.04045 ? value/12.92 : ((value+.055)/1.055)**2.4);
+  const luminance=.2126*rgb[0]+.7152*rgb[1]+.0722*rgb[2];
+  document.documentElement.style.setProperty("--bubble-text",luminance>.179 ? "#111111" : "#ffffff");
+  $("bubbleColorInput").value=color;
+}
+$("bubbleColorInput").addEventListener("input",event=>{
+  applyBubbleColor(event.target.value);
+  try {localStorage.setItem("minichat-bubble-color",event.target.value);} catch{}
+});
+$("resetBubbleColorButton").addEventListener("click",()=>{
+  document.documentElement.style.removeProperty("--bubble-color");
+  document.documentElement.style.removeProperty("--bubble-text");
+  try {localStorage.removeItem("minichat-bubble-color");} catch{}
+});
 $("fontSizeRange").addEventListener("input", event => {
   const value = String(Math.min(19, Math.max(13, Number(event.target.value) || 16)));
   document.documentElement.style.setProperty("--message-font-size", value + "px");
   try { localStorage.setItem("minichat-font-size", value); } catch {}
 });
 $("wallpaperSelect").addEventListener("change", async event => {
+  if(activeChat) localStorage.removeItem("minichat-wallpaper-image:"+activeChat.id);
   applyWallpaper(event.target.value);
   if (activeChat) {
     try { await saveChatPreferences(); }
@@ -286,6 +433,26 @@ $("messageExpirySelect").addEventListener("change", async event => {
     $("messageExpirySelect").value = String(previous);
     showNotice("Срок жизни сообщений требует миграции Supabase: " + safeError(error), 6000);
   }
+});
+$("wallpaperImageInput").addEventListener("change",async event=>{
+  const file=event.target.files?.[0],chatId=activeChat?.id;
+  if(!file || !chatId) { showNotice("Сначала открой чат."); return; }
+  if(!["image/png","image/jpeg","image/webp"].includes(file.type) || file.size>8*1024*1024) { showNotice("Выбери PNG, JPEG или WebP до 8 МБ."); return; }
+  try {
+    const bitmap=await createImageBitmap(file),scale=Math.min(1,1600/Math.max(bitmap.width,bitmap.height));
+    const canvas=document.createElement("canvas");canvas.width=Math.max(1,Math.round(bitmap.width*scale));canvas.height=Math.max(1,Math.round(bitmap.height*scale));
+    canvas.getContext("2d").drawImage(bitmap,0,0,canvas.width,canvas.height);bitmap.close();
+    const data=canvas.toDataURL("image/webp",.72);
+    if(data.length>2*1024*1024) throw new Error("Картинка слишком большая");
+    localStorage.setItem("minichat-wallpaper-image:"+chatId,data);
+    if(activeChat?.id===chatId) applyWallpaper($("wallpaperSelect").value);
+    showNotice("Обои сохранены.");
+  } catch(error) { showNotice("Не удалось сохранить обои: "+safeError(error),6000); }
+  finally {event.target.value="";}
+});
+$("clearWallpaperImage").addEventListener("click",()=>{
+  if(activeChat) localStorage.removeItem("minichat-wallpaper-image:"+activeChat.id);
+  applyWallpaper($("wallpaperSelect").value);
 });
 $("languageSelect").addEventListener("change", event => { currentLanguage = event.target.value; applyLanguage(); });
 $("soundToggle").addEventListener("change", event => {
@@ -389,6 +556,8 @@ $("messageSearchToggle").addEventListener("click", () => {
   if ($("messageSearchBar").classList.contains("hidden")) {
     $("messageSearchInput").value = "";
     messageSearchTerm = "";
+    serverSearchResults=null;
+    searchRevision++;
     $("messageSearchCount").textContent = "";
     renderMessages();
   } else {
@@ -397,48 +566,60 @@ $("messageSearchToggle").addEventListener("click", () => {
 });
 $("messageSearchInput").addEventListener("input", () => {
   messageSearchTerm = $("messageSearchInput").value.trim().toLocaleLowerCase("ru");
+  serverSearchResults=null;
+  clearTimeout(searchTimer);
+  const version=++searchRevision,chatId=activeChat?.id,query=messageSearchTerm;
   renderMessages();
+  if(query.length>=2 && chatId) searchTimer=setTimeout(async()=>{
+    const {data,error}=await sb.rpc("search_messages_in_chat",{p_chat:chatId,p_query:query});
+    if(version!==searchRevision || activeChat?.id!==chatId) return;
+    if(error) { showNotice("Не удалось найти сообщения в полной истории."); return; }
+    serverSearchResults=data || [];
+    renderMessages();
+  },300);
 });
 $("exportChatButton").addEventListener("click", exportCurrentChat);
-function exportCurrentChat() {
+async function exportCurrentChat() {
   if (!activeChat) { showNotice("Сначала открой переписку."); return; }
-  const lines = messages.map(message => {
-    const date = new Date(message.created_at).toLocaleString("ru-RU");
-    const name = profilesById[message.sender_id]?.username ||
-      (message.sender_id === currentUser?.id ? currentProfile?.username : "Собеседник") ||
-      (message.sender_id === currentUser?.id ? "Я" : "Собеседник");
-    const body = visibleMessageText(message) || (message.file_name ? "[Файл: " + message.file_name + "]" : "[Вложение]");
-    return "[" + date + "] " + name + ": " + body;
-  });
-  const blob = new Blob(["MiniChat — " + chatTitle(activeChat) + "\n\n" + lines.join("\n")], {type:"text/plain;charset=utf-8"});
-  const url = URL.createObjectURL(blob);
-  const link = document.createElement("a");
-  link.href = url;
-  link.download = "minichat-" + (chatTitle(activeChat).replace(/[^a-z0-9а-я_-]+/gi,"-").slice(0,50) || "chat") + ".txt";
-  document.body.appendChild(link);
-  link.click();
-  link.remove();
-  setTimeout(() => URL.revokeObjectURL(url), 1000);
-  showNotice("Экспорт переписки подготовлен.");
+  const chat=activeChat, userId=currentUser.id, profiles={...profilesById};
+  $("exportChatButton").disabled=true;
+  try {
+    const history=await readChatHistory(sb,chat.id);
+    const lines=[];
+    for(const message of history) {
+      if(currentUser?.id!==userId) throw new Error("Сессия завершена");
+      let body=message.content || (message.file_name ? "[Файл: "+message.file_name+"]" : "[Вложение]");
+      if(message.encrypted_payload) { await decryptE2EEMessage(message); body=message.__decryptedContent || E2EE_LOCK_TEXT; }
+      else if(isEncryptedText(body)) body=await decryptTextMessage(body,chat.id) || "[Зашифрованное сообщение: ключ недоступен]";
+      const name=profiles[message.sender_id]?.username || (message.sender_id===userId ? "Я" : "Собеседник");
+      lines.push("["+new Date(message.created_at).toLocaleString("ru-RU")+"] "+name+": "+body);
+    }
+    const blob=new Blob(["MiniChat — "+chatTitle(chat)+"\n\n"+lines.join("\n")],{type:"text/plain;charset=utf-8"});
+    const url=URL.createObjectURL(blob),link=document.createElement("a");
+    link.href=url;
+    link.download="minichat-"+(chatTitle(chat).replace(/[^a-z0-9а-я_-]+/gi,"-").slice(0,50) || "chat")+".txt";
+    document.body.appendChild(link); link.click(); link.remove();
+    setTimeout(()=>URL.revokeObjectURL(url),1000);
+    showNotice("Сохранена вся переписка: "+history.length+" сообщений. Вложения указаны по имени.");
+  } catch(error) { showNotice("Не удалось экспортировать переписку: "+safeError(error),6000); }
+  finally { $("exportChatButton").disabled=false; }
 }
 
 async function loadMembers() {
-  profilesById = {};
-  otherProfile = null;
-  if (!activeChat) return;
+  const chat=activeChat,userId=currentUser?.id;
+  if (!chat || !userId) return;
   try {
-    const {data: members} = await sb.from("chat_members").select("user_id").eq("chat_id", activeChat.id);
-    const ids = (members || []).map(m => m.user_id);
-    if (!ids.length) return;
-    const {data: profs} = await sb.from("profiles").select("*").in("id", ids);
-    (profs || []).forEach(p => profilesById[p.id] = p);
-    if (!activeChat.is_group) {
-      otherProfile = (profs || []).find(p => p.id !== currentUser.id) || null;
-    }
-  } catch (e) {
-    console.warn("Не удалось загрузить участников:", e);
-  }
-  updateHeaderStatus();
+    const {data:members,error:membersError}=await sb.from("chat_members").select("user_id").eq("chat_id",chat.id);
+    if(membersError) throw membersError;
+    const ids=(members || []).map(member=>member.user_id);
+    if(!ids.length) return;
+    const {data:profiles,error}=await sb.from("profiles").select("*").in("id",ids);
+    if(error) throw error;
+    if(activeChat?.id!==chat.id || currentUser?.id!==userId) return;
+    profilesById=Object.fromEntries((profiles || []).map(profile=>[profile.id,profile]));
+    otherProfile=chat.is_group ? null : (profiles || []).find(profile=>profile.id!==userId) || null;
+    updateHeaderStatus();
+  } catch(error) {console.debug("Member refresh skipped:",error?.message || error);}
 }
 
 function updateHeaderStatus() {
@@ -679,6 +860,7 @@ $("registerButton").addEventListener("click", async () => {
 
 async function initializeUser(user) {
   currentUser = user;
+  outbox = createOutbox(localStorage,user.id);
   startPresenceUpdates();
   setLoggedIn(true);
   $("loginStatus").textContent = "";
@@ -686,6 +868,11 @@ async function initializeUser(user) {
   try {
     await loadProfile();
     await loadChats();
+    subscribeToActivity();
+    const requestedChat = new URLSearchParams(location.search).get("chat");
+    const target = chats.find(chat => chat.id === requestedChat);
+    if (target) await openChat(target);
+    await flushOutbox();
     startDeviceSessionTracking();
     sb.rpc("purge_expired_messages").then(({error}) => {
       if (error) console.debug("Expiry cleanup is unavailable before the messaging migration:", error.message);
@@ -720,6 +907,12 @@ sb.auth.onAuthStateChange((event, session) => {
   }
   if (event === "SIGNED_OUT") {
     currentUser = null;
+    outbox = null;
+    receipts = [];
+    if (activityChannel) sb.removeChannel(activityChannel);
+    activityChannel = null;
+    sharedSpace?.close();
+    clearTimeout(reconnectTimer);
     currentProfile = null;
     e2eeIdentityPromise = null;
     e2eeIdentityCacheKey = null;
@@ -1055,7 +1248,7 @@ async function loadChatSummaries() {
           content:row.latest_content,created_at:row.latest_created_at,
           message_type:row.latest_message_type,file_name:row.latest_file_name
         } : null;
-        next[row.chat_id] = {latest,unread:row.chat_id === activeChat?.id ? 0 : Number(row.unread_count || 0)};
+        next[row.chat_id] = {latest,unread:row.chat_id === activeChat?.id && chatIsVisible() && atLatest() ? 0 : Number(row.unread_count || 0)};
       });
       chatSummaries = next;
       chats.sort((a,b) => {
@@ -1082,7 +1275,7 @@ async function loadChatSummaries() {
       if (latestResult.error) throw latestResult.error;
       const latest = latestResult.data?.[0] || null;
       let unread = 0;
-      if (chat.id !== activeChat?.id) {
+      if (chat.id !== activeChat?.id || !chatIsVisible() || !atLatest()) {
         const unreadResult = await sb.from("messages")
           .select("id", {count:"exact", head:true})
           .eq("chat_id", chat.id)
@@ -1395,6 +1588,15 @@ async function decryptE2EEMessage(message) {
 }
 function visibleMessageText(message) {
   if (!message) return "";
+  if (isEncryptedText(message.content)) {
+    if (message.__plainContent !== undefined) return message.__plainContent;
+    if (!e2eeDecrypting.has(message.id)) {
+      e2eeDecrypting.add(message.id);
+      decryptTextMessage(message.content,message.chat_id).then(plain=>{ message.__plainContent=plain || "🔒 Нужен общий ключ"; })
+        .finally(()=>{ e2eeDecrypting.delete(message.id); if(messages.includes(message)) renderMessages(); });
+    }
+    return "🔒 Зашифрованное сообщение";
+  }
   if (message.encrypted_payload) {
     if (message.__decryptedContent === undefined) {
       decryptE2EEMessage(message).catch(error=>console.debug("E2EE decrypt skipped:",error?.message || error));
@@ -1417,6 +1619,7 @@ async function loadChatPreference(chatId) {
   try {
     const {data,error} = await sb.from("chat_preferences").select("muted,wallpaper,message_expiry_seconds")
       .eq("user_id",currentUser.id).eq("chat_id",chatId).maybeSingle();
+    if(activeChat?.id!==chatId) return;
     if (error) throw error;
     currentChatMuted = Boolean(data?.muted);
     $("muteChatToggle").checked = currentChatMuted;
@@ -1432,15 +1635,17 @@ async function loadChatPreference(chatId) {
   try {
     const {data,error} = await sb.from("chat_preferences").select("e2ee_enabled")
       .eq("user_id",currentUser.id).eq("chat_id",chatId).maybeSingle();
+    if(activeChat?.id!==chatId) return;
     if (error) throw error;
     e2eeSchemaAvailable = true;
     currentChatE2ee = Boolean(data?.e2ee_enabled);
     $("e2eeToggle").checked = currentChatE2ee;
   } catch (error) {
+    if(activeChat?.id!==chatId) return;
     e2eeSchemaAvailable = false;
     currentChatE2ee = false;
     $("e2eeToggle").checked = false;
-    console.debug("E2EE remains disabled until migration 004 is applied:",error?.message || error);
+    console.debug("E2EE remains disabled until migration 006 is applied:",error?.message || error);
   }
 }
 
@@ -1469,7 +1674,7 @@ $("e2eeToggle").addEventListener("change",async event => {
   try {
     const {error:probeError} = await sb.from("chat_preferences").select("e2ee_enabled")
       .eq("user_id",currentUser.id).eq("chat_id",activeChat.id).limit(1);
-    if (probeError) throw new Error("Сначала примени миграцию 004_e2ee_text_messages в Supabase");
+    if (probeError) throw new Error("Сначала примени миграцию 006_e2ee_text_messages в Supabase");
     e2eeSchemaAvailable = true;
     if (requested) await getE2EEIdentity();
     currentChatE2ee = requested;
@@ -1486,7 +1691,18 @@ $("e2eeToggle").addEventListener("change",async event => {
 
 /* Открытие чата и сообщения */
 async function openChat(chat) {
+  saveCurrentDraft();
+  sharedSpace?.close();
+  removeRealtime();
   activeChat = chat;
+  receipts = [];
+  messages = [];
+  pinnedMessage = null;
+  serverSearchResults = null;
+  searchRevision++;
+  firstUnreadId = null;
+  editingMessageId = null;
+  selectedMessageIds.clear();
   galleryOverride = null;
   galleryOverrideChatId = null;
   replyToMessage = null;
@@ -1508,9 +1724,12 @@ async function openChat(chat) {
   $("messageSearchBar").classList.add("hidden");
   renderChatList();
   await Promise.all([loadMembers(), loadMessages()]);
+  if(activeChat?.id!==chat.id) return;
   await loadChatPreference(chat.id);
-  await markMessagesAsRead();
-  if (chatSummaries[chat.id]) chatSummaries[chat.id].unread = 0;
+  if(activeChat?.id!==chat.id) return;
+  applyWallpaper($("wallpaperSelect").value);
+  await loadPinnedMessage(chat.id);
+  if (chatIsVisible() && atLatest()) await markMessagesAsRead();
   renderChatList();
   subscribeToMessages();
   updateScrollButton();
@@ -1527,18 +1746,21 @@ async function loadMessages() {
       .select("*")
       .eq("chat_id", chatId)
       .is("deleted_at", null)
-      .order("created_at", {ascending:false})
+      .order("created_at", {ascending:false}).order("id",{ascending:false})
       .limit(MESSAGE_PAGE_SIZE + 1);
 
     if (error) throw error;
     if (activeChat?.id !== chatId) return;
     const newestFirst = data || [];
     hasMoreMessages = newestFirst.length > MESSAGE_PAGE_SIZE;
-    messages = newestFirst.slice(0, MESSAGE_PAGE_SIZE).reverse();
+    messages = mergePending(newestFirst.slice(0, MESSAGE_PAGE_SIZE).reverse(),queuedMessages(),chatId);
+    firstUnreadId = messages.find(row => row.sender_id !== currentUser.id && !row.read_at)?.id || null;
     lastRenderedChatId = chatId;
     renderMessages();
     forceScrollDown();
     await refreshReactions();
+    await acknowledgeMessages(messages);
+    await loadReceipts(chatId);
   } catch (error) {
     $("messages").innerHTML = '<div class="empty-chat">Не удалось загрузить сообщения.<br>' +
       escapeHtml(safeError(error)) + '</div>';
@@ -1551,7 +1773,8 @@ async function loadOlderMessages() {
   if (!activeChat || loadingOlderMessages || !hasMoreMessages || !messages.length) return;
   loadingOlderMessages = true;
   const chatId = activeChat.id;
-  const firstMessage = messages[0];
+  const firstMessage = messages.find(row => !row.__payload);
+  if (!firstMessage) { loadingOlderMessages = false; return; }
   const container = $("messages");
   const oldHeight = container.scrollHeight;
   const oldTop = container.scrollTop;
@@ -1560,8 +1783,8 @@ async function loadOlderMessages() {
       .select("*")
       .eq("chat_id", chatId)
       .is("deleted_at", null)
-      .lt("created_at", firstMessage.created_at)
-      .order("created_at", {ascending:false})
+      .or(`created_at.lt.${firstMessage.created_at},and(created_at.eq.${firstMessage.created_at},id.lt.${firstMessage.id})`)
+      .order("created_at", {ascending:false}).order("id",{ascending:false})
       .limit(MESSAGE_PAGE_SIZE + 1);
     if (error) throw error;
     if (activeChat?.id !== chatId) return;
@@ -1595,18 +1818,24 @@ async function togglePinMessage(message) {
     return;
   }
 
+  for(const row of messages) row.is_pinned=false;
   message.is_pinned = nextPinned;
+  pinnedMessage=nextPinned ? message : null;
   renderMessages();
   showNotice(nextPinned ? "Сообщение закреплено 📌" : "Сообщение откреплено");
 }
 async function markMessagesAsRead() {
-  if (!currentUser || !activeChat) return;
-
-  const { error } = await sb.rpc("mark_chat_read", { p_chat: activeChat.id });
-
-  if (error) {
-    console.warn("Не удалось отметить сообщения прочитанными:", error.message);
-  }
+  if (!currentUser || !activeChat || !chatIsVisible() || !atLatest() || readInFlight) return;
+  const chatId = activeChat.id;
+  readInFlight=true;
+  try {
+    await acknowledgeMessages(messages,true);
+    if (activeChat?.id === chatId && chatIsVisible() && atLatest()) {
+      if (chatSummaries[chatId]) chatSummaries[chatId].unread = 0;
+      unreadWhileAway = 0;
+      renderChatList();
+    }
+  } finally {readInFlight=false;}
 }
 
 function appendLinkPreview(container, content) {
@@ -1642,6 +1871,9 @@ function appendLinkPreview(container, content) {
 
 function renderMessages() {
   const container = $("messages");
+  clearTimeout(expiryTimer);
+  const deadlines = messages.map(row => new Date(row.expires_at).getTime()).filter(time => time > Date.now());
+  if (deadlines.length) expiryTimer = setTimeout(renderMessages,Math.min(Math.max(1,Math.min(...deadlines)-Date.now()),2147483647));
   updatePinnedBanner();
   updateSelectionControls();
   const shouldScroll = container.scrollHeight - container.scrollTop - container.clientHeight < 140;
@@ -1655,7 +1887,7 @@ function renderMessages() {
     return;
   }
 
-  const unexpiredMessages = messages.filter(message => !message.expires_at || new Date(message.expires_at).getTime() > Date.now());
+  const unexpiredMessages = (serverSearchResults || messages).filter(message => !message.expires_at || new Date(message.expires_at).getTime() > Date.now());
   const visibleMessages = messageSearchTerm
     ? unexpiredMessages.filter(message => {
         const author = profilesById[message.sender_id]?.username || "";
@@ -1702,6 +1934,7 @@ function renderMessages() {
     const row = document.createElement("div");
     row.className = "message-row " + (own ? "own" : "other");
     row.dataset.messageId = String(message.id);
+    if (message.__pending) row.classList.add("sending-message");
     let touchStart = null;
     row.addEventListener("touchstart", event => {
       if (event.touches.length !== 1 || event.target.closest("button,a,input,textarea,video,audio")) {
@@ -1909,7 +2142,7 @@ function renderMessages() {
       if (replied) {
         const reply = document.createElement("div");
         reply.style.cssText = "border-left:2px solid #9ef2e1;padding-left:8px;margin-bottom:8px;font-size:11px;color:#c0d8d8";
-        reply.textContent = "↪ " + (replied.__plainContent ?? (isEncryptedText(replied.content) ? "🔒 Зашифрованное сообщение" : (replied.content || replied.file_name || "Сообщение")));
+        reply.textContent = "↪ " + (visibleMessageText(replied) || replied.file_name || "Сообщение");
         reply.style.cursor = "pointer";
         reply.title = "Перейти к исходному сообщению";
         reply.addEventListener("click", () => jumpToMessage(replied.id));
@@ -1936,27 +2169,15 @@ function renderMessages() {
     time.textContent = formatTime(message.created_at);
     footer.appendChild(time);
 
-    if (own && message.__pending) {
-      const sendingLabel = document.createElement("span");
-      sendingLabel.textContent = "Отправляется…";
-      sendingLabel.title = "Сообщение ещё отправляется";
-      footer.appendChild(sendingLabel);
-    } else if (own && message.__failed) {
-      const failedLabel = document.createElement("span");
-      failedLabel.textContent = "Не отправлено";
-      failedLabel.title = message.__error || "Ошибка отправки";
-      failedLabel.style.color = "var(--danger)";
-      footer.appendChild(failedLabel);
-    } else if (own && message.read_at) {
-      const read = document.createElement("span");
-      read.textContent = "✓✓";
-      read.title = "Прочитано";
-      footer.appendChild(read);
-    } else if (own && message.id && !String(message.id).startsWith("local-")) {
-      const sent = document.createElement("span");
-      sent.textContent = "✓";
-      sent.title = "Отправлено";
-      footer.appendChild(sent);
+    if (own) {
+      const status = messageStatus(message,receipts);
+      const label = document.createElement("span");
+      label.textContent = status.symbol;
+      label.title = message.__error || status.label;
+      label.setAttribute("aria-label",status.label);
+      label.className = "message-status status-" + status.state;
+      label.dataset.status = status.state;
+      footer.appendChild(label);
     }
     bubble.appendChild(footer);
 
@@ -1972,6 +2193,14 @@ function renderMessages() {
       retryBtn.textContent = "↻";
       retryBtn.addEventListener("click", () => retryFailedMessage(message));
       actions.appendChild(retryBtn);
+      const discard=document.createElement("button");
+      discard.className="icon-btn";discard.type="button";discard.title="Удалить из очереди";discard.textContent="×";
+      discard.addEventListener("click",()=>{
+        if(!confirm("Удалить неотправленное сообщение с этого устройства?")) return;
+        try {outbox.remove(message.id);messages=messages.filter(row=>row.id!==message.id);renderMessages();updateConnectionStatus();}
+        catch(error) {showNotice("Не удалось изменить очередь: "+safeError(error));}
+      });
+      actions.appendChild(discard);
     }
 
     if (!message.__pending && !message.__failed) {
@@ -2052,7 +2281,7 @@ function renderMessages() {
 
   if (shouldScroll) {
     container.scrollTop = container.scrollHeight;
-    unreadWhileAway = 0;
+    if (chatIsVisible()) unreadWhileAway = 0;
   }
   updateScrollButton();
 }
@@ -2083,8 +2312,7 @@ async function refreshReactions() {
       next[row.message_id].counts[row.reaction] = (next[row.message_id].counts[row.reaction] || 0) + 1;
       if (row.user_id === currentUser?.id) next[row.message_id].mine.push(row.reaction);
     });
-    reactionsByMessage = next;
-    renderMessages();
+    if(JSON.stringify(reactionsByMessage)!==JSON.stringify(next)) {reactionsByMessage = next;renderMessages();}
   } catch (error) {
     console.debug("Reactions need the optional Supabase migration:", error?.message || error);
   }
@@ -2157,7 +2385,15 @@ function forceScrollDown() {
   updateScrollButton();
 }
 
-function jumpToMessage(messageId) {
+async function jumpToMessage(messageId) {
+  const chatId=activeChat?.id;
+  while(!messages.some(row=>String(row.id)===String(messageId)) && hasMoreMessages && activeChat?.id===chatId) {
+    const count=messages.length;
+    await loadOlderMessages();
+    if(messages.length===count) break;
+  }
+  if(activeChat?.id!==chatId) return;
+  if(serverSearchResults) { serverSearchResults=null;messageSearchTerm="";searchRevision++;$("messageSearchInput").value="";renderMessages(); }
   const target = [...document.querySelectorAll("#messages .message-row")]
     .find(el => el.dataset.messageId === String(messageId));
   if (!target) {
@@ -2182,13 +2418,18 @@ function updateScrollButton() {
 }
 
 $("scrollToBottomButton").addEventListener("click", () => {
-  $("messages").scrollTo({top:$("messages").scrollHeight, behavior:"smooth"});
+  if (unreadWhileAway && firstUnreadId) jumpToMessage(firstUnreadId);
+  else $("messages").scrollTo({top:$("messages").scrollHeight, behavior:"smooth"});
   unreadWhileAway = 0;
   updateScrollButton();
 });
 
 $("messages").addEventListener("scroll", () => {
   updateScrollButton();
+  if (atLatest() && chatIsVisible()) {
+    firstUnreadId = null;
+    if (unreadWhileAway) markMessagesAsRead();
+  }
   if ($("messages").scrollTop < 100) loadOlderMessages();
 });
 
@@ -2204,7 +2445,12 @@ $("cancelReplyButton").addEventListener("click", () => {
 });
 
 async function persistPendingMessage(pending) {
-  if (!pending || !pending.__payload || !currentUser) return false;
+  if (!pending?.__payload || !currentUser || pending.sender_id !== currentUser.id) return false;
+  if (pendingInserts.has(pending.id)) return false;
+  if (!navigator.onLine) { pending.__pending = false; pending.__failed = true; renderMessages(); return false; }
+  const ownerOutbox = outbox;
+  const senderId = currentUser.id;
+  pendingInserts.add(pending.id);
   pending.__pending = true;
   pending.__failed = false;
   pending.__error = "";
@@ -2214,21 +2460,23 @@ async function persistPendingMessage(pending) {
       const clearText = pending.__decryptedContent ?? pending.content ?? "";
       const encrypted_payload = await encryptTextForChat(clearText,pending.chat_id);
       pending.__payload = {...pending.__payload,content:E2EE_LOCK_TEXT,encrypted_payload};
+      ownerOutbox.put(pending);
     }
-    const {data: inserted, error} = await sb.from("messages").insert(pending.__payload).select().single();
-    if (error) throw error;
+    const inserted = await insertOnce(sb,pending.__payload);
+    ownerOutbox.remove(pending.id);
+    if (currentUser?.id !== senderId) return true;
     messages = messages.filter(item => item.id !== pending.id);
     if (activeChat?.id === pending.chat_id) addOrUpdateMessage(inserted);
-    loadChatSummaries().then(renderChatList).catch(error => console.debug("Chat summary refresh skipped:", error?.message || error));
+    loadChatSummaries().then(renderChatList).catch(error => console.debug("Summary refresh skipped:",error));
     return true;
   } catch (error) {
     pending.__pending = false;
     pending.__failed = true;
     pending.__error = safeError(error);
-    renderMessages();
-    showNotice("Не удалось отправить сообщение. Нажми ↻ рядом с ним, чтобы повторить.", 6000);
+    try { ownerOutbox.put(pending); } catch (storageError) { console.warn("Outbox save failed",storageError); }
+    if (currentUser?.id === senderId) renderMessages();
     return false;
-  }
+  } finally { pendingInserts.delete(pending.id); updateConnectionStatus(); }
 }
 
 async function retryFailedMessage(message) {
@@ -2246,6 +2494,7 @@ async function sendMessage() {
 
   const chatIdAtSend = activeChat.id;
   const row = {
+    id:crypto.randomUUID(),
     chat_id: chatIdAtSend,
     sender_id: currentUser.id,
     content,
@@ -2254,7 +2503,7 @@ async function sendMessage() {
     ...(currentExpirySeconds ? {expires_at:new Date(Date.now() + currentExpirySeconds * 1000).toISOString()} : {})
   };
   const pending = {
-    id:"local-" + Date.now() + "-" + Math.floor(Math.random() * 1000000),
+    id:"local-" + row.id,
     chat_id:chatIdAtSend,
     sender_id:currentUser.id,
     content,
@@ -2268,6 +2517,8 @@ async function sendMessage() {
     __payload:row
   };
 
+  try { outbox.put(pending); }
+  catch (error) { showNotice("Не удалось сохранить сообщение на устройстве. Текст остался в поле ввода.",6000); return; }
   messages.push(pending);
   renderMessages();
   forceScrollDown();
@@ -2286,6 +2537,11 @@ async function sendMessage() {
 $("sendButton").addEventListener("click", sendMessage);
 
 $("messageInput").addEventListener("keydown", event => {
+  if (event.isComposing) return;
+  if (event.key === "ArrowUp" && !event.target.value && !event.altKey && !event.ctrlKey && !event.metaKey) {
+    const latest = [...messages].reverse().find(row => row.sender_id === currentUser?.id && row.message_type === "text" && !row.__payload && !row.encrypted_payload);
+    if (latest) { event.preventDefault(); editMessage(latest); }
+  }
   if (event.key === "Enter" && !event.shiftKey) {
     event.preventDefault();
     sendMessage();
@@ -2306,11 +2562,17 @@ document.addEventListener("keydown", event => {
     }
   }
   if (event.key === "Escape") {
+    if (replyToMessage) { replyToMessage = null; $("replyBar").classList.add("hidden"); }
+    $("stickerPicker").classList.add("hidden");
+    $("formatToolbar").classList.add("hidden");
+    sharedSpace?.close();
     if (!$("emojiPicker").classList.contains("hidden")) $("emojiPicker").classList.add("hidden");
     if (!$("messageSearchBar").classList.contains("hidden")) {
       $("messageSearchBar").classList.add("hidden");
       $("messageSearchInput").value = "";
       messageSearchTerm = "";
+      serverSearchResults=null;
+      searchRevision++;
       $("messageSearchCount").textContent = "";
       renderMessages();
     }
@@ -2711,6 +2973,8 @@ document.addEventListener("keydown", event => {
 
 /* Обновление сообщений в реальном времени */
 function removeRealtime() {
+  subscriptionVersion++;
+  clearTimeout(reconnectTimer);
   if (typingTimer) clearTimeout(typingTimer);
   typingTimer = null;
   if (rtcPeer || pendingCallOffer) endOneToOneCall(true);
@@ -2987,14 +3251,16 @@ function subscribeToMessages() {
   if (!activeChat || !currentUser) return;
 
   const chatId = activeChat.id;
+  const version=subscriptionVersion;
   realtimeChannel = sb.channel("chat:" + chatId, {
     config: {private:true, presence:{key:currentUser.id}}
   });
   presenceChannel = realtimeChannel;
   realtimeChannel
     .on("presence", {event:"sync"}, () => {
+      if(subscriptionVersion!==version) return;
       const state = presenceChannel?.presenceState?.() || {};
-      onlineUserIds = new Set(Object.keys(state));
+      onlineUserIds = new Set(Object.entries(state).filter(([,sessions]) => sessions.some(session => session.visible !== false)).map(([id]) => id));
       if (otherProfile) updateHeaderStatus();
     })
     .on("broadcast", {event:"call-offer"}, ({payload}) => { handleIncomingCallOffer(payload).catch(error => console.debug("Incoming call ignored:",error?.message || error)); })
@@ -3013,6 +3279,8 @@ function subscribeToMessages() {
         }, 2200);
       }
     })
+    .on("postgres_changes",{event:"*",schema:"public",table:"message_receipts"},() => loadReceipts(chatId))
+    .on("postgres_changes",{event:"*",schema:"public",table:"message_reactions"},() => refreshReactions())
     .on("postgres_changes", {
       event:"*",
       schema:"public",
@@ -3034,18 +3302,26 @@ function subscribeToMessages() {
         }
         const messageBox = $("messages");
         const distance = messageBox.scrollHeight - messageBox.scrollTop - messageBox.clientHeight;
-        if (distance > 180) unreadWhileAway += 1;
+        if (distance > 180 || !chatIsVisible()) {
+          unreadWhileAway += 1;
+          if (!firstUnreadId) firstUnreadId = payload.new.id;
+        }
+        if (!currentChatMuted && soundEnabled && document.visibilityState === "visible") navigator.vibrate?.(40);
       }
       addOrUpdateMessage(payload.new);
+      if (payload.new.is_pinned || pinnedMessage?.id===payload.new.id) loadPinnedMessage(chatId);
       if (payload.eventType === "INSERT") {
         loadChatSummaries().then(renderChatList).catch(error => console.debug("Chat summary refresh skipped:", error?.message || error));
       }
-      if (payload.eventType === "INSERT" && payload.new.sender_id !== currentUser?.id && document.visibilityState === "visible") {
-        markMessagesAsRead();
+      if (payload.eventType === "INSERT" && payload.new.sender_id !== currentUser?.id) {
+        acknowledgeMessages([payload.new],chatIsVisible() && atLatest());
+        if (chatIsVisible() && atLatest()) markMessagesAsRead();
       }
     })
     .subscribe(async status => {
+      if (activeChat?.id !== chatId || subscriptionVersion!==version) return;
       resolveRealtimeWaiters(status === "SUBSCRIBED");
+      updateConnectionStatus();
       if (status === "SUBSCRIBED" && currentUser && activeChat?.id === chatId) {
         const {error} = await realtimeChannel.track({
           user_id:currentUser.id,
@@ -3053,14 +3329,16 @@ function subscribeToMessages() {
           visible:document.visibilityState === "visible"
         });
         if (error) console.debug("Chat Presence tracking unavailable:",error.message);
-      } else if (status === "CHANNEL_ERROR" || status === "TIMED_OUT") {
-        console.warn("Realtime channel unavailable. Check Supabase Realtime authorization policies.");
+        reconnectDelay = 2000;
+        refreshConnection();
+      } else if (["CHANNEL_ERROR","TIMED_OUT","CLOSED"].includes(status)) {
+        scheduleReconnect();
       }
     });
 }
 
 $("pinnedBanner").addEventListener("click", () => {
-  const pinned = messages.find(message => message.is_pinned);
+  const pinned = pinnedMessage || messages.find(message => message.is_pinned);
   if (pinned) jumpToMessage(pinned.id);
 });
 $("selectMessagesButton").addEventListener("click", () => {
@@ -3240,12 +3518,18 @@ function updateSelectionControls() {
   button.textContent = selectedMessageIds.size ? "🗑 " + selectedMessageIds.size : "🗑";
   button.disabled = selectedMessageIds.size === 0;
 }
+async function loadPinnedMessage(chatId=activeChat?.id) {
+  if(!chatId) return;
+  const {data,error}=await sb.from("messages").select("*").eq("chat_id",chatId).eq("is_pinned",true)
+    .is("deleted_at",null).order("created_at",{ascending:false}).limit(1);
+  if(!error && activeChat?.id===chatId) {pinnedMessage=data?.[0] || null; updatePinnedBanner();}
+}
 function updatePinnedBanner() {
   const banner = $("pinnedBanner");
   if (!banner) return;
-  const pinned = messages.find(message => message.is_pinned && (!message.expires_at || new Date(message.expires_at).getTime() > Date.now()));
+  const pinned = [pinnedMessage,...messages].find(message => message?.is_pinned && !message.deleted_at && (!message.expires_at || new Date(message.expires_at).getTime() > Date.now()));
   banner.classList.toggle("hidden", !pinned);
-  $("pinnedBannerText").textContent = pinned ? (pinned.content || pinned.file_name || "Закреплено вложение") : "Закреплённое сообщение";
+  $("pinnedBannerText").textContent = pinned ? (visibleMessageText(pinned) || pinned.file_name || "Закреплено вложение") : "Закреплённое сообщение";
 }
 async function showChatStats() {
   if (!activeChat) return;
@@ -3295,6 +3579,7 @@ $("chatRefreshButton").addEventListener("click", async () => {
 
 $("backButton").addEventListener("click", () => {
   saveCurrentDraft();
+  sharedSpace.close();
   activeChat = null;
   replyToMessage = null;
   removeRealtime();
@@ -3312,7 +3597,7 @@ if ("serviceWorker" in navigator && /^https?:$/.test(location.protocol)) {
   });
 }
 
-initSharedSpace({
+const sharedSpace = initSharedSpace({
   sb,
   $,
   getCurrentUser:() => currentUser,
@@ -3321,6 +3606,21 @@ initSharedSpace({
   safeError,
   onAlbum:openSharedAlbum
 });
+
+window.addEventListener("offline",updateConnectionStatus);
+window.addEventListener("online",() => {
+  if(!currentUser) {restoreSession();return;}
+  nextRetryAt = 0;
+  subscribeToActivity();
+  if (activeChat) subscribeToMessages();
+  refreshConnection();
+});
+window.addEventListener("pagehide",saveCurrentDraft);
+setInterval(() => {
+  if (!currentUser) return;
+  flushOutbox();
+  if (document.visibilityState === "visible") refreshConnection();
+},15000);
 
 /* Запуск приложения */
 restoreSession();

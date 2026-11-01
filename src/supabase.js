@@ -1,6 +1,7 @@
 import { createClient } from "@supabase/supabase-js";
 
-const fallbackUrl = "https://gjqpucsbfuoqoncmdfbj.supabase.co";
+// Unconfigured local development cannot write to the live chat.
+const fallbackUrl = import.meta.env.DEV ? "https://minichat-dev.invalid" : "https://gjqpucsbfuoqoncmdfbj.supabase.co";
 const fallbackPublishableKey = "sb_publishable_S1M6veMpHEUzwpA0HeYwlw_IkQYqIzr";
 
 export const SUPABASE_URL = import.meta.env.VITE_SUPABASE_URL || fallbackUrl;

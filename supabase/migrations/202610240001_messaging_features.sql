@@ -17,13 +17,13 @@ alter table public.messages add column if not exists is_pinned boolean not null 
 alter table public.messages add column if not exists waveform smallint[];
 create index if not exists messages_expires_at_idx on public.messages (expires_at) where expires_at is not null;
 
-create or replace function public.is_chat_member(p_chat_id uuid)
+create or replace function public.is_chat_member(check_chat_id uuid)
 returns boolean language sql stable security definer
 set search_path = public, pg_temp
 as $$
   select exists (
     select 1 from public.chat_members cm
-    where cm.chat_id = p_chat_id and cm.user_id = auth.uid()
+    where cm.chat_id = check_chat_id and cm.user_id = auth.uid()
   );
 $$;
 
@@ -38,8 +38,8 @@ as $$
   );
 $$;
 
-revoke all on function public.is_chat_member(uuid) from public;
-revoke all on function public.can_access_message(uuid) from public;
+revoke all on function public.is_chat_member(uuid) from public, anon;
+revoke all on function public.can_access_message(uuid) from public, anon;
 grant execute on function public.is_chat_member(uuid) to authenticated;
 grant execute on function public.can_access_message(uuid) to authenticated;
 
@@ -158,7 +158,7 @@ begin
     limit 1;
 end;
 $$;
-revoke all on function public.find_chat_user(text) from public;
+revoke all on function public.find_chat_user(text) from public, anon;
 grant execute on function public.find_chat_user(text) to authenticated;
 
 create or replace function public.create_chat_with_members(
@@ -195,7 +195,7 @@ begin
   return new_chat_id;
 end;
 $$;
-revoke all on function public.create_chat_with_members(text,boolean,uuid[]) from public;
+revoke all on function public.create_chat_with_members(text,boolean,uuid[]) from public, anon;
 grant execute on function public.create_chat_with_members(text,boolean,uuid[]) to authenticated;
 
 
@@ -220,7 +220,7 @@ begin
     limit 100;
 end;
 $$;
-revoke all on function public.search_chat_messages(text) from public;
+revoke all on function public.search_chat_messages(text) from public, anon;
 grant execute on function public.search_chat_messages(text) to authenticated;
 
 create or replace function public.update_chat_member_role(p_chat_id uuid, p_user_id uuid, p_role text)
@@ -244,7 +244,7 @@ begin
   update public.chat_members set role=p_role where chat_id=p_chat_id and user_id=p_user_id;
 end;
 $$;
-revoke all on function public.update_chat_member_role(uuid,uuid,text) from public;
+revoke all on function public.update_chat_member_role(uuid,uuid,text) from public, anon;
 grant execute on function public.update_chat_member_role(uuid,uuid,text) to authenticated;
 
 create or replace function public.remove_chat_member(p_chat_id uuid, p_user_id uuid)
@@ -265,7 +265,7 @@ begin
   delete from public.chat_members where chat_id=p_chat_id and user_id=p_user_id;
 end;
 $$;
-revoke all on function public.remove_chat_member(uuid,uuid) from public;
+revoke all on function public.remove_chat_member(uuid,uuid) from public, anon;
 grant execute on function public.remove_chat_member(uuid,uuid) to authenticated;
 
 
@@ -316,7 +316,7 @@ begin
   where cm.user_id=auth.uid();
 end;
 $$;
-revoke all on function public.get_chat_summaries() from public;
+revoke all on function public.get_chat_summaries() from public, anon;
 grant execute on function public.get_chat_summaries() to authenticated;
 
 create or replace function public.get_chat_stats(p_chat_id uuid)
@@ -343,7 +343,7 @@ begin
   return result;
 end;
 $$;
-revoke all on function public.get_chat_stats(uuid) from public;
+revoke all on function public.get_chat_stats(uuid) from public, anon;
 grant execute on function public.get_chat_stats(uuid) to authenticated;
 
 
@@ -367,7 +367,7 @@ begin
   where id=p_msg and chat_id=target_chat;
 end;
 $$;
-revoke all on function public.set_message_pinned(uuid,boolean) from public;
+revoke all on function public.set_message_pinned(uuid,boolean) from public, anon;
 grant execute on function public.set_message_pinned(uuid,boolean) to authenticated;
 
 create or replace function public.add_chat_member(p_chat_id uuid, p_user_id uuid)
@@ -387,7 +387,7 @@ begin
   on conflict do nothing;
 end;
 $$;
-revoke all on function public.add_chat_member(uuid,uuid) from public;
+revoke all on function public.add_chat_member(uuid,uuid) from public, anon;
 grant execute on function public.add_chat_member(uuid,uuid) to authenticated;
 
 create or replace function public.rename_chat(p_chat_id uuid, p_title text)
@@ -409,7 +409,7 @@ begin
   if not found then raise exception 'Group chat not found'; end if;
 end;
 $$;
-revoke all on function public.rename_chat(uuid,text) from public;
+revoke all on function public.rename_chat(uuid,text) from public, anon;
 grant execute on function public.rename_chat(uuid,text) to authenticated;
 
 create or replace function public.purge_expired_messages()
@@ -427,7 +427,10 @@ begin
   return removed_count;
 end;
 $$;
-revoke all on function public.purge_expired_messages() from public;
+revoke all on function public.purge_expired_messages() from public, anon;
 grant execute on function public.purge_expired_messages() to authenticated;
 
+grant select,insert,delete on public.message_reactions,public.saved_messages to authenticated;
+grant select,insert,update on public.chat_preferences to authenticated;
+grant select,insert,update,delete on public.push_subscriptions to authenticated;
 commit;

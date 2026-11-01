@@ -43,7 +43,7 @@ test("experimental end-to-end encryption is opt-in and uses Web Crypto", () => {
     "encrypted_payload",
     "crypto.subtle.deriveBits",
     "crypto.subtle.deriveKey",
-    "E2EE remains disabled until migration 004"
+    "E2EE remains disabled until migration 006"
   ]) {
     assert.ok(source.includes(marker), "Missing E2EE safeguard/implementation marker: " + marker);
   }
